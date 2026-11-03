@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "conversational-prompt-builder"
+version = "0.1.0"
+description = "A guided, multi-turn conversation that interviews the user and synthesizes a high-quality prompt."
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit>=1.40.0",
+    "hypothesis>=6.112.0",
+    "openai>=1.54.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["prompt_builder*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

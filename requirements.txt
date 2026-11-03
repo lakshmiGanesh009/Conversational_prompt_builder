@@ -1,0 +1,4 @@
+streamlit>=1.40.0
+hypothesis>=6.112.0
+pytest>=8.3.0
+openai>=1.54.0
