@@ -93,16 +93,17 @@ it.
 1. In the Community Cloud workspace, choose **Create app** and select repository
    `lakshmiGanesh009/Conversational_prompt_builder`, branch `main`, and main file
    `app.py`.
-2. Open **Advanced settings**, select Python **3.11**, and paste the required secret
-   into the Secrets editor using the key shown in `.streamlit/secrets.toml.example`.
-   Add `OPENAI_BASE_URL` only when using a compatible non-default endpoint.
-3. Before adding the secret, restrict app access to the intended viewers and set a
-   provider-side spend limit. The app uses the owner's server-side API key and does
-   not include per-user authentication, rate limiting, or quotas. Do not expose it
-   publicly unless that usage and cost risk is acceptable.
-4. Deploy the app. Community Cloud installs the root `requirements.txt` and reads
-   the checked-in `.streamlit/config.toml`. Never commit the real
-   `.streamlit/secrets.toml` file.
+2. Open **Advanced settings**, select Python **3.11**, leave Secrets empty, and
+   deploy. Community Cloud installs the root `requirements.txt` and reads the
+   checked-in `.streamlit/config.toml`.
+3. In the deployed app's **Settings → Sharing**, set **Who can view this app** to
+   **Only specific people can view this app** and save. Then open **Settings →
+   Secrets** and paste the key shown in `.streamlit/secrets.toml.example`; add
+   `OPENAI_BASE_URL` only for a compatible non-default endpoint.
+4. Set a provider-side spend limit. The app uses the owner's server-side API key
+   and does not include per-user authentication, rate limiting, or quotas. Do not
+   make the app public unless that usage and cost risk is acceptable. Never commit
+   the real `.streamlit/secrets.toml` file.
 
 ## Observability and SLOs
 
