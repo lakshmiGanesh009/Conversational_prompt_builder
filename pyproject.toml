@@ -8,14 +8,15 @@ version = "0.1.0"
 description = "A guided, multi-turn conversation that interviews the user and synthesizes a high-quality prompt."
 requires-python = ">=3.11"
 dependencies = [
-    "streamlit>=1.40.0",
-    "hypothesis>=6.112.0",
-    "openai>=1.54.0",
+    "streamlit>=1.59,<2",
+    "pandas>=2.2,<4",
+    "openai>=1.54,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
+    "hypothesis>=6.112.0",
+    "pytest>=8.3.0",
 ]
 
 [tool.setuptools.packages.find]

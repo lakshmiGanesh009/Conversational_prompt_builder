@@ -39,6 +39,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from prompt_builder.adaptive_planner import (
+    TaskPlan,
+    plan_prompt,
+    relevant_missing_fields,
+)
+from prompt_builder import catalog
 from prompt_builder.intent_analyzer import missing_parameters
 from prompt_builder.llm_client import LlmClient, LlmRequest
 from prompt_builder.models import (
@@ -133,27 +139,31 @@ class GenerationResult:
 # a single, ready-to-use prompt from the supplied goal and parameters. The model
 # does the writing; our deterministic code (below) enforces that every collected
 # value actually appears.
-_GENERATE_SYSTEM = (
-    "You are an expert prompt engineer. You write a single, high-quality, "
-    "ready-to-use prompt for a user. You are given the user's goal and a set of "
-    "collected parameters (such as audience, domain, tone, format, and length). "
-    "Write one polished, well-structured prompt that reflects the goal and "
-    "incorporates every supplied parameter value.\n\n"
-    "Organize the prompt into clearly labeled sections where helpful (for "
-    "example: Role, Objective, Context, Audience, Tone & Voice, Output Format, "
-    "Constraints, and Quality Bar). Be specific and give the model enough context "
-    "to succeed.\n\n"
-    "End the prompt with a section titled '# RECOMMENDED MODEL SETTINGS' that "
-    "advises the reader which inference settings to use when running this prompt, "
-    "chosen to fit the task (a factual/structured task should use a low "
-    "temperature; a creative task a higher one). Include, each on its own line: "
-    "Temperature, Top-p (noting to tune temperature OR top-p, not both), "
-    "Max tokens (a concrete number sized to the expected output), Frequency "
-    "penalty, Presence penalty (noting to tune frequency OR presence, not both), "
-    "and any useful Stop sequences (or 'none'). Give a one-clause reason for the "
-    "temperature choice.\n\n"
-    "Return only the prompt text, with no preamble or explanation."
+_BASE_GENERATE_SYSTEM = (
+    "You are a senior prompt architect. Return one ready-to-paste prompt, not advice about writing one. "
+    "Use the supplied task plan and brief faithfully. Include every captured value, but never force "
+    "declined or irrelevant fields. Use {{UPPER_SNAKE_CASE}} placeholders only for inputs genuinely "
+    "expected when the prompt is run; do not replace concrete details with placeholders. Omit empty "
+    "sections and filler. Return only the final prompt text."
 )
+
+_DEPTH_INSTRUCTIONS = {
+    "focused": (
+        "Keep the prompt concise and execution-focused. Use only the relevant subset of labeled "
+        "sections, usually Objective, Inputs, Output Contract, and Constraints. Do not add ceremony."
+    ),
+    "detailed": (
+        "Produce a detailed prompt brief with the relevant labeled sections. Add explicit requirements, "
+        "a clear output contract, factuality behavior, and a short quality check where useful."
+    ),
+    "comprehensive": (
+        "Produce a comprehensive professional prompt brief. Use relevant labeled sections from Role, "
+        "Objective, Context, Inputs, Audience, Requirements, Output Contract, Constraints, Examples, "
+        "Edge Cases, Quality Checks, Definition of Done, Assumptions, and Recommended Model Settings. "
+        "Include explicit do/do-not rules, measurable acceptance criteria, silent self-verification, "
+        "and behavior for missing or conflicting information."
+    ),
+}
 
 # The system instruction framing a revision call. It tells the model to rewrite an
 # existing prompt to incorporate the user's revision request while still honouring
@@ -184,25 +194,77 @@ def _collected_parameters(spec: PromptSpecification) -> list[ParameterValue]:
     return collected
 
 
-def _render_spec(spec: PromptSpecification) -> str:
-    """Render the goal and collected parameters as plain text for the LLM.
+def recommended_model_settings(plan: TaskPlan) -> dict[str, Any]:
+    """Return task/depth-specific guidance without tuning two samplers at once."""
+    temperatures = {
+        "software": 0.2,
+        "summarize": 0.1,
+        "rewrite": 0.3,
+        "learning": 0.3,
+        "video": 0.6,
+        "marketing": 0.7,
+        "general": 0.4,
+    }
+    caps = {"focused": 900, "detailed": 1800, "comprehensive": 3500}
+    return {
+        "temperature": temperatures[plan.task_type],
+        "max_tokens": caps[plan.depth],
+        "note": (
+            "Tune temperature only; leave top-p at the provider default. "
+            "max_tokens is a runtime truncation cap, not a request for quality or verbosity."
+        ),
+    }
 
-    This is the human-readable content the model writes from. It is a faithful,
-    deterministic rendering of what has been collected; it does not itself
-    guarantee the values survive into the model's output (that guarantee is
-    enforced afterwards by :func:`_ensure_values_present`).
-    """
-    lines: list[str] = []
-    goal = spec.goal if spec.goal and spec.goal.strip() else "(not yet specified)"
-    lines.append(f"Goal: {goal}")
 
+def build_generation_instruction(spec: PromptSpecification, plan: Optional[TaskPlan] = None) -> str:
+    """Build the deterministic adaptive instruction sent as the system message."""
+    active = plan or plan_prompt(spec)
+    return (
+        f"{_BASE_GENERATE_SYSTEM}\n\nTASK TYPE: {active.task_type}\n"
+        f"PROMPT DEPTH: {active.depth}\n{_DEPTH_INSTRUCTIONS[active.depth]}"
+    )
+
+
+def _render_spec(spec: PromptSpecification, plan: Optional[TaskPlan] = None) -> str:
+    """Render a complete, deterministic prompt brief for the writing model."""
+    active = plan or plan_prompt(spec)
+    lines: list[str] = [
+        "Prompt plan:",
+        f"- Task type: {active.task_type}",
+        f"- Effective depth: {active.depth}",
+        f"- Goal / objective: {spec.goal if spec.goal and spec.goal.strip() else '(not yet specified)'}",
+    ]
     collected = _collected_parameters(spec)
     if collected:
-        lines.append("Parameters:")
+        lines.append("Captured brief fields:")
         for value in collected:
-            lines.append(f"- {value.name}: {value.value}")
+            lines.append(f"- {catalog.parameter_label(value.name)} [{value.name}]: {value.value}")
     else:
-        lines.append("Parameters: (none collected)")
+        lines.append("Captured brief fields: (none)")
+
+    declined = sorted(name for name, value in spec.parameters.items() if value.status == "declined")
+    if declined:
+        lines.append("Declined fields (do not force or invent): " + ", ".join(declined))
+    missing = relevant_missing_fields(spec, active)
+    if missing:
+        lines.append("Relevant information still missing:")
+        for name in missing:
+            lines.append(f"- {catalog.parameter_label(name)}")
+        lines.append(
+            "Use a {{VARIABLE}} only when that information is genuinely required at run time; "
+            "otherwise state a conservative assumption inside the prompt."
+        )
+
+    settings = recommended_model_settings(active)
+    lines.extend(
+        [
+            "Recommended settings to include only when useful:",
+            f"- Temperature: {settings['temperature']}",
+            f"- Max tokens runtime cap: {settings['max_tokens']}",
+            f"- Guidance: {settings['note']}",
+            "The target prompt must state the desired response length/detail semantically when relevant.",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -232,6 +294,62 @@ def _ensure_values_present(text: str, spec: PromptSpecification) -> str:
     if text.strip():
         return f"{text.rstrip()}\n\n{appended}"
     return appended
+
+
+def _ensure_adaptive_structure(text: str, spec: PromptSpecification, plan: TaskPlan) -> str:
+    """Add only critical missing sections for detailed/comprehensive prompts."""
+    if plan.depth == "focused":
+        return text
+
+    lowered = text.casefold()
+    additions: list[str] = []
+
+    def missing_heading(*names: str) -> bool:
+        return not any(f"# {name}" in lowered or f"## {name}" in lowered for name in names)
+
+    if missing_heading("objective") and spec.goal:
+        additions.append(f"# OBJECTIVE\n{spec.goal}")
+
+    if plan.depth == "comprehensive" and missing_heading("requirements", "constraints"):
+        rules = [
+            "- DO follow every captured requirement and explicit output constraint.",
+            "- DO distinguish supplied facts from assumptions.",
+            "- DO NOT invent unavailable facts, sources, capabilities, or results.",
+        ]
+        additions.append("# REQUIREMENTS AND CONSTRAINTS\n" + "\n".join(rules))
+
+    if missing_heading("quality checks", "self-check"):
+        additions.append(
+            "# QUALITY CHECKS\nBefore answering, silently verify that the response follows the output contract, "
+            "covers every must-have item, respects exclusions, and identifies unsupported assumptions."
+        )
+
+    if plan.depth == "comprehensive" and missing_heading("definition of done", "acceptance criteria"):
+        success = spec.parameters.get("success_criteria")
+        done = success.value if success is not None and success.status == "collected" else (
+            "The result is complete, internally consistent, directly usable, and each explicit requirement is verifiably satisfied."
+        )
+        additions.append(f"# DEFINITION OF DONE\n{done}")
+
+    if plan.depth == "comprehensive" and missing_heading("if information is missing", "missing information"):
+        additions.append(
+            "# IF INFORMATION IS MISSING\nState the smallest necessary assumptions and continue when safe. "
+            "If a missing fact would materially change or invalidate the result, ask a concise clarifying question instead of inventing it."
+        )
+
+    if plan.depth == "comprehensive" and missing_heading("recommended model settings", "model settings"):
+        settings = recommended_model_settings(plan)
+        additions.append(
+            "# RECOMMENDED MODEL SETTINGS\n"
+            f"- Temperature: {settings['temperature']}\n"
+            f"- Max tokens: {settings['max_tokens']} (runtime cap only; follow the semantic length requirements above)\n"
+            "- Top-p: provider default; tune temperature or top-p, not both"
+        )
+
+    if not additions:
+        return text
+    prefix = text.rstrip()
+    return (prefix + "\n\n" if prefix else "") + "\n\n".join(additions)
 
 
 def _resolve(settings: Optional[GenerationSettings], field: str, default: Any) -> Any:
@@ -298,9 +416,10 @@ class PromptGenerator:
         Raises:
             LlmError: if the LLM request cannot be completed.
         """
+        plan = plan_prompt(spec)
         request = LlmRequest(
-            prompt=_render_spec(spec),
-            system=_GENERATE_SYSTEM,
+            prompt=_render_spec(spec, plan),
+            system=build_generation_instruction(spec, plan),
             temperature=_resolve(settings, "temperature", _GEN_TEMPERATURE),
             max_tokens=_resolve(settings, "max_tokens", _GEN_MAX_TOKENS),
             frequency_penalty=_resolve(
@@ -309,11 +428,12 @@ class PromptGenerator:
             top_p=_resolve(settings, "top_p", None),
             presence_penalty=_resolve(settings, "presence_penalty", None),
             stop=_resolve(settings, "stop", None),
+            operation="generate",
         )
         # Let LlmError propagate without touching the spec (Req 4.5).
         response = self._llm.complete(request)
 
-        return self._build_result(response.text, spec)
+        return self._build_result(response.text, spec, plan)
 
     def revise(
         self,
@@ -346,9 +466,10 @@ class PromptGenerator:
         Raises:
             LlmError: if the LLM request cannot be completed.
         """
+        plan = plan_prompt(spec)
         request = LlmRequest(
             prompt=self._render_revision(current, revision_text, spec),
-            system=_REVISE_SYSTEM,
+            system=_REVISE_SYSTEM + "\n\n" + build_generation_instruction(spec, plan),
             temperature=_resolve(settings, "temperature", _REVISE_TEMPERATURE),
             max_tokens=_resolve(settings, "max_tokens", _REVISE_MAX_TOKENS),
             frequency_penalty=_resolve(
@@ -357,12 +478,13 @@ class PromptGenerator:
             top_p=_resolve(settings, "top_p", None),
             presence_penalty=_resolve(settings, "presence_penalty", None),
             stop=_resolve(settings, "stop", None),
+            operation="revise",
         )
         # Let LlmError propagate; returning only on success leaves ``current``
         # unchanged on failure (Req 5.4).
         response = self._llm.complete(request)
 
-        return self._build_result(response.text, spec)
+        return self._build_result(response.text, spec, plan)
 
     @staticmethod
     def _render_revision(
@@ -380,15 +502,18 @@ class PromptGenerator:
         )
 
     @staticmethod
-    def _build_result(text: str, spec: PromptSpecification) -> GenerationResult:
-        """Turn raw LLM text into a :class:`GenerationResult`.
-
-        Applies the deterministic "every collected value present" guarantee
-        (Req 4.2) and computes the omitted-required list via
-        :func:`~prompt_builder.intent_analyzer.missing_parameters` (Req 4.4),
-        reusing that single source of truth rather than recomputing it here.
-        """
+    def _build_result(
+        text: str,
+        spec: PromptSpecification,
+        plan: Optional[TaskPlan] = None,
+    ) -> GenerationResult:
+        """Apply deterministic completeness, structure, and omission reporting."""
+        active_plan = plan or plan_prompt(spec)
         final_text = _ensure_values_present(text, spec)
+        final_text = _ensure_adaptive_structure(final_text, spec, active_plan)
+        # Adaptive planning controls which questions are worth asking, but it
+        # does not change the required-field contract. A focused prompt may stop
+        # questioning early while still reporting required omissions.
         omitted_required = missing_parameters(spec)
         prompt = GeneratedPrompt(text=final_text, omitted_required=omitted_required)
         return GenerationResult(prompt=prompt, omitted_required=omitted_required)

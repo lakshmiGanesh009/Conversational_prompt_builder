@@ -155,6 +155,10 @@ class LlmRequest:
         stop: An optional stop sequence or list of sequences that halt generation
             when produced, giving precise control over output length/structure.
             (promptingguide.ai: Stop Sequences.)
+        operation: A short label naming what this call is for (``"interpret"``,
+            ``"generate"``, or ``"revise"``). It is never sent to the model; the
+            observability layer uses it to attribute latency, errors, and token
+            usage to the right agent step. Defaults to ``"unknown"``.
     """
 
     prompt: str
@@ -167,6 +171,7 @@ class LlmRequest:
     frequency_penalty: Optional[float] = None
     presence_penalty: Optional[float] = None
     stop: Optional[list[str]] = None
+    operation: str = "unknown"
 
 
 @dataclass
@@ -181,10 +186,24 @@ class LlmResponse:
             structured output and the text parsed as a JSON object; otherwise
             ``None``. Structured-aware callers (such as the Intent_Analyzer)
             prefer this when present and fall back to parsing ``text``.
+        model: The model that actually served the request, when the provider
+            reports it. ``None`` otherwise.
+        prompt_tokens: Input tokens billed for the request, when reported.
+        completion_tokens: Output tokens generated, when reported.
+        finish_reason: Why generation stopped (for example ``"stop"`` or
+            ``"length"``). ``"length"`` means the output hit ``max_tokens`` and
+            was truncated, which the observability layer tracks as an SLI.
+
+    The four usage fields are optional and default to ``None`` so test doubles
+    that only supply ``text``/``structured`` keep working unchanged.
     """
 
     text: str
     structured: Optional[dict[str, Any]] = None
+    model: Optional[str] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    finish_reason: Optional[str] = None
 
 
 @runtime_checkable
@@ -348,7 +367,19 @@ class OpenAiLlmClient:
         if request.structured:
             structured = self._parse_structured(text)
 
-        return LlmResponse(text=text, structured=structured)
+        # Usage / finish reason feed the observability layer. Every read is
+        # defensive: an OpenAI-compatible host may omit any of these, and a
+        # missing value must never turn a successful call into a failure.
+        usage = getattr(completion, "usage", None)
+        choices = getattr(completion, "choices", None) or [None]
+        return LlmResponse(
+            text=text,
+            structured=structured,
+            model=getattr(completion, "model", None),
+            prompt_tokens=getattr(usage, "prompt_tokens", None),
+            completion_tokens=getattr(usage, "completion_tokens", None),
+            finish_reason=getattr(choices[0], "finish_reason", None),
+        )
 
     @staticmethod
     def _extract_text(completion: Any) -> str:

@@ -142,3 +142,19 @@ def test_current_settings_blank_and_comma_only_stop_is_none() -> None:
     settings = app._current_settings()
     assert settings.stop is None
     st.session_state.pop(app.STOP_KEY, None)
+
+
+# --- responsive SaaS CSS ----------------------------------------------------
+def test_saas_css_contains_mobile_layout_and_safe_bottom_spacing() -> None:
+    """The responsive shell stacks at phone width and clears the pinned input."""
+    css = app._SAAS_CSS
+    assert "@media (max-width: 700px)" in css
+    assert "grid-template-columns: repeat(2" in css
+    assert "padding: .7rem .75rem 9.5rem" in css
+    assert "overflow" in app._CUSTOM_CSS or "overflow" in css
+
+
+def test_frontend_css_does_not_depend_on_external_font_assets() -> None:
+    """System font fallbacks work offline and icon ligature fonts are protected."""
+    assert "@import url(" not in app._CUSTOM_CSS
+    assert "material-symbols" in app._SAAS_CSS

@@ -1,0 +1,11 @@
+# Streamlit app configuration. The application is intentionally pinned to a
+# coherent light theme; the component CSS uses the same navy/blue/cyan tokens.
+[theme]
+base = "light"
+primaryColor = "#145DA0"
+backgroundColor = "#F4F8FC"
+secondaryBackgroundColor = "#EAF2F8"
+textColor = "#0B1F3A"
+
+[client]
+toolbarMode = "minimal"

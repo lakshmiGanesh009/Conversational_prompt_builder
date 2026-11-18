@@ -6,8 +6,10 @@ Session with the user's request, the collected parameters, and a pre-written
 Generated_Prompt, exactly as a real LLM turn would eventually produce.
 
 Each entry is a plain dict with:
-    title    - short label for the example button
-    request  - the plain-language ask shown as the user's first message
+    title       - short label for the example button
+    category    - gallery filter label
+    description - compact gallery summary
+    request     - the plain-language ask shown as the user's first message
     goal     - the identified goal for the spec
     params   - collected {parameter_name: value} folded into the spec (shown in
                the sidebar parameter tracker)
@@ -34,6 +36,8 @@ DEMO_EXAMPLES: list[dict] = [
     # ======================================================================
     {
         "title": "📣 Product launch email",
+        "category": "Marketing",
+        "description": "Launch a SaaS product with a conversion-focused announcement email.",
         "request": "Write a launch email for a new productivity app called FlowState.",
         "goal": (
             "Write a high-converting product launch announcement email for FlowState, "
@@ -117,6 +121,8 @@ DEMO_EXAMPLES: list[dict] = [
     # ======================================================================
     {
         "title": "📚 30-day Python study plan",
+        "category": "Learning",
+        "description": "Build a practical day-by-day Python curriculum with a capstone project.",
         "request": "Create a study plan for learning Python in 30 days.",
         "goal": (
             "Design a rigorous but encouraging 30-day, zero-to-capable Python study "
@@ -217,6 +223,8 @@ DEMO_EXAMPLES: list[dict] = [
     # ======================================================================
     {
         "title": "🕯️ Product description (e-com)",
+        "category": "E-commerce",
+        "description": "Create sensory, conversion-aware product-page copy for online retail.",
         "request": "Draft a product description for handmade soy candles.",
         "goal": (
             "Write a persuasive, SEO-aware e-commerce product description for "
@@ -298,6 +306,8 @@ DEMO_EXAMPLES: list[dict] = [
     # ======================================================================
     {
         "title": "🎬 Video edit brief (YouTube/Reels)",
+        "category": "Video",
+        "description": "Turn raw footage into a retention-focused short-form editing brief.",
         "request": "Write a prompt that turns raw footage into an edited short-form video.",
         "goal": (
             "Produce a precise, reusable editing brief that turns raw footage into a "
@@ -382,6 +392,8 @@ DEMO_EXAMPLES: list[dict] = [
     # ======================================================================
     {
         "title": "📝 Handwritten study notes",
+        "category": "Study Notes",
+        "description": "Transform source material into a structured visual-notes generation brief.",
         "request": "Make a prompt that turns my content into premium handwritten-style study notes.",
         "goal": (
             "Produce a reusable, image-generation-ready prompt that turns uploaded "
@@ -474,6 +486,8 @@ DEMO_EXAMPLES: list[dict] = [
     # ======================================================================
     {
         "title": "💻 LMS / course website",
+        "category": "Software",
+        "description": "Specify a secure, build-ready learning platform with auth and enrollment.",
         "request": (
             "I want to develop a website for learning, LMS or courses with login, "
             "register and courses to register."

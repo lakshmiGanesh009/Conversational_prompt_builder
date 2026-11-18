@@ -42,7 +42,17 @@ from typing import Optional
 
 import streamlit as st
 
-from prompt_builder import catalog, conversation_manager, elicitation_engine, validation
+from prompt_builder import (
+    adaptive_planner,
+    catalog,
+    conversation_manager,
+    dashboard,
+    elicitation_engine,
+    frontend,
+    navigation,
+    telemetry,
+    validation,
+)
 from prompt_builder.intent_analyzer import IntentAnalyzer, merge_parameters, missing_parameters
 from prompt_builder.llm_client import LlmClient, LlmError, OpenAiLlmClient
 from prompt_builder.models import (
@@ -66,11 +76,19 @@ SESSION_KEY = "session"
 PENDING_ERROR_KEY = "pending_error"
 # A one-shot "copied" confirmation flag, set by the Copy control.
 COPY_CONFIRMED_KEY = "copy_confirmed"
+# Local editing is client-session-only and never calls the LLM.
+EDIT_MODE_KEY = "prompt_edit_mode"
+EDIT_DRAFT_KEY = "prompt_edit_draft"
 # Set when the last interpretation reported that prior context was unavailable.
 CONTEXT_UNAVAILABLE_KEY = "context_unavailable"
 # True while the current Session was seeded from a hardcoded demo example, so the
 # prompt panel can show a "demo prompt (no AI)" ribbon.
 DEMO_MODE_KEY = "demo_mode"
+# The related brief fields asked in the most recent adaptive follow-up.
+PENDING_QUESTION_KEY = "pending_question"
+# Prompt depth is semantic output/planning depth, separate from max_tokens.
+PROMPT_DEPTH_KEY = "prompt_depth"
+PROMPT_DEPTH_OPTIONS = ("Adaptive", "Focused", "Detailed", "Comprehensive")
 
 # --- Editable model settings (promptingguide.ai LLM Settings) ----------------
 # The live inference settings the user can tune in the sidebar "Model settings"
@@ -102,6 +120,19 @@ REJECTED_INPUT_KEY = "rejected_input"
 # shown to the user on the next render rather than being discarded.
 REJECTED_ERROR_KEY = "rejected_error"
 
+# Top-level route state and compatibility aliases come from the navigation
+# module, which is the single source of truth for page keys and labels. The
+# visible radio retains its historical ``view`` key while route changes use a
+# separate non-widget key, allowing buttons to navigate safely after rendering.
+ROUTE_KEY = navigation.ROUTE_STATE_KEY
+VIEW_KEY = "view"
+HOME_VIEW = navigation.HOME_PAGE_KEY
+BUILDER_VIEW = navigation.BUILDER_PAGE_KEY
+TEMPLATES_VIEW = navigation.TEMPLATES_PAGE_KEY
+OBSERVABILITY_VIEW = navigation.OBSERVABILITY_PAGE_KEY
+GUIDE_VIEW = navigation.GUIDE_PAGE_KEY
+TEMPLATE_PREVIEW_KEY = navigation.TEMPLATE_PREVIEW_KEY
+
 PAGE_TITLE = "Conversational Prompt Builder"
 PAGE_ICON = "💬"
 PAGE_TAGLINE = "Turn a plain-language idea into a precise, high-quality prompt."
@@ -120,7 +151,6 @@ from prompt_builder.demo_examples import DEMO_EXAMPLES
 # assets; everything is scoped to this app's markup.
 _CUSTOM_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
 :root {
     --cpb-ink: #2e1065;         /* deep indigo-plum - primary text (no black) */
@@ -141,8 +171,11 @@ _CUSTOM_CSS = """
     --cpb-shadow-sm: 0 4px 14px -10px rgba(79, 70, 229, 0.5);
 }
 
-/* Global type: a clean, modern sans across the whole app. */
-html, body, .stApp, .stApp * {
+/* Global type: a clean, modern sans across the whole app. Icon glyphs are
+   excluded: Streamlit draws icons with a ligature font (the text "arrow_right"
+   becomes an arrow), so overriding their font prints the icon's name instead. */
+html, body, .stApp,
+.stApp *:not([data-testid="stIconMaterial"]):not([class*="material-symbols"]):not([class*="material-icons"]) {
     font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 
@@ -296,7 +329,9 @@ html, body, .stApp, .stApp * {
     border-radius: var(--cpb-radius);
     padding: 1rem 1.05rem;
     margin-bottom: 0.55rem;
-    min-height: 120px;
+    height: 148px;                   /* equal heights keep every button aligned */
+    box-sizing: border-box;
+    overflow: hidden;
     background: var(--cpb-surface);
     box-shadow: var(--cpb-shadow-sm);
     transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
@@ -309,13 +344,18 @@ html, body, .stApp, .stApp * {
 .cpb-example-title {
     font-weight: 700;
     font-size: 0.98rem;
+    line-height: 1.3;
     color: var(--cpb-ink);
     margin-bottom: 0.4rem;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
 }
 .cpb-example-text {
     font-size: 0.85rem;
     color: var(--cpb-muted);
     line-height: 1.4;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden;
 }
 /* A small "demo" ribbon shown above the demo prompt panel. */
 .cpb-demo-note {
@@ -470,6 +510,15 @@ html, body, .stApp, .stApp * {
     color: #fbfaff;
     box-shadow: 0 12px 28px -10px rgba(244, 63, 142, 0.6);
 }
+/* Streamlit wraps button labels in <p>; the page-wide text colour would
+   otherwise paint them dark purple on the dark gradient. */
+.stButton > button[kind="primary"] p,
+.stButton > button[kind="primary"] span { color: #fbfaff !important; font-weight: 600; }
+.stButton > button:not([kind="primary"]) p { color: var(--cpb-accent-2) !important; font-weight: 600; }
+.stButton > button:focus-visible {
+    outline: 3px solid var(--cpb-accent-soft) !important;
+    outline-offset: 2px;
+}
 
 /* Progress bar in the accent color. */
 [data-testid="stProgress"] [role="progressbar"] > div {
@@ -496,7 +545,6 @@ html, body, .stApp, .stApp * {
 /* --- Form controls: inputs, text areas, chat input ------------------- */
 .stTextInput input,
 .stTextArea textarea,
-[data-testid="stChatInput"] textarea,
 [data-baseweb="input"] input {
     border-radius: 12px !important;
     border: 1px solid var(--cpb-border) !important;
@@ -505,18 +553,50 @@ html, body, .stApp, .stApp * {
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .stTextInput input:focus,
-.stTextArea textarea:focus,
-[data-testid="stChatInput"] textarea:focus {
+.stTextArea textarea:focus {
     border-color: var(--cpb-accent) !important;
     box-shadow: 0 0 0 3px var(--cpb-accent-soft) !important;
     outline: none !important;
 }
-/* The pinned chat input bar: a soft floating surface. */
+/* Top header and bottom chat bar blend into the tinted page instead of
+   showing as flat bands of a different colour. */
+[data-testid="stHeader"] { background: transparent !important; }
+[data-testid="stBottom"],
+[data-testid="stBottom"] > div,
+[data-testid="stBottomBlockContainer"] { background: transparent !important; }
+
+/* The pinned chat input: ONE rounded, floating surface. The inner textarea
+   drops its own border so there is no box-inside-a-box. */
 [data-testid="stChatInput"] {
-    border-radius: 14px;
-    border: 1px solid var(--cpb-border);
-    background: var(--cpb-surface);
-    box-shadow: var(--cpb-shadow);
+    border-radius: 16px !important;
+    border: 1px solid var(--cpb-border) !important;
+    background: var(--cpb-surface) !important;
+    box-shadow: 0 14px 34px -18px rgba(79, 70, 229, 0.55) !important;
+}
+[data-testid="stChatInput"]:focus-within {
+    border-color: var(--cpb-accent) !important;
+    box-shadow: 0 0 0 3px var(--cpb-accent-soft), 0 14px 34px -18px rgba(79,70,229,.55) !important;
+}
+[data-testid="stChatInput"] textarea,
+[data-testid="stChatInput"] [data-baseweb="textarea"],
+[data-testid="stChatInput"] [data-baseweb="base-input"] {
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+}
+[data-testid="stChatInput"] button {
+    background: linear-gradient(135deg, var(--cpb-accent-2), var(--cpb-accent)) !important;
+    color: #fbfaff !important;
+    border-radius: 10px !important;
+}
+
+/* Sidebar stats: compact numbers instead of oversized digits. */
+[data-testid="stSidebar"] [data-testid="stMetricValue"] { font-size: 1.4rem !important; }
+
+/* Info boxes in the app palette instead of Streamlit's default blue. */
+[data-testid="stAlertContentInfo"] { color: var(--cpb-ink) !important; }
+div[data-testid="stAlert"]:has([data-testid="stAlertContentInfo"]) {
+    background: var(--cpb-accent-soft) !important;
 }
 
 /* --- Expanders: card-like, themed header ----------------------------- */
@@ -575,6 +655,267 @@ hr { border-color: var(--cpb-border) !important; opacity: 0.8; }
 </style>
 """
 
+# Final professional SaaS layer. These rules intentionally override the older
+# component skin above without changing behavior. They keep surfaces quiet,
+# spacing predictable, focus visible, and the layout usable at phone widths.
+_SAAS_CSS = """
+<style>
+:root {
+    --cpb-ink: #1e1b4b;
+    --cpb-muted: #5b5680;
+    --cpb-faint: #77728f;
+    --cpb-border: #ddd9eb;
+    --cpb-surface: #ffffff;
+    --cpb-subtle: #f5f3fa;
+    --cpb-canvas: #f8f7fb;
+    --cpb-accent: #6d28d9;
+    --cpb-accent-2: #4338ca;
+    --cpb-accent-soft: #ede9fe;
+    --cpb-ok: #087f75;
+    --cpb-pending: #b45309;
+    --cpb-radius: 12px;
+    --cpb-shadow: 0 1px 2px rgba(30,27,75,.06), 0 8px 24px rgba(30,27,75,.05);
+    --cpb-shadow-sm: 0 1px 2px rgba(30,27,75,.06);
+}
+.stApp {
+    background: var(--cpb-canvas);
+    color-scheme: light;
+}
+.block-container { max-width: 1120px; padding-top: 1.5rem; padding-bottom: 8rem; }
+.cpb-header {
+    padding: .9rem 1rem; margin-bottom: 1rem; border-radius: var(--cpb-radius);
+    box-shadow: var(--cpb-shadow-sm); overflow: visible;
+}
+.cpb-header::before { display: none; }
+.cpb-header .cpb-logo, .cpb-sidebrand-logo {
+    background: var(--cpb-accent-2); box-shadow: none;
+}
+.cpb-header h1 { font-size: 1.25rem; color: var(--cpb-ink); background: none; -webkit-text-fill-color: initial; }
+.cpb-header p { font-size: .86rem; }
+.cpb-empty { padding: 1.35rem; background: var(--cpb-surface); border-radius: var(--cpb-radius); box-shadow: var(--cpb-shadow-sm); }
+.cpb-empty h3 { font-size: 1.1rem; }
+.cpb-empty ol li::before { background: var(--cpb-accent-2); box-shadow: none; }
+.cpb-template-card {
+    min-height: 158px; box-sizing: border-box; display: flex; flex-direction: column;
+    border: 1px solid var(--cpb-border); border-radius: var(--cpb-radius);
+    padding: 1rem; margin: .25rem 0 .55rem; background: var(--cpb-surface);
+    box-shadow: var(--cpb-shadow-sm);
+}
+.cpb-template-category {
+    align-self: flex-start; font-size: .7rem; font-weight: 700; color: var(--cpb-accent-2);
+    background: var(--cpb-accent-soft); border-radius: 999px; padding: .18rem .5rem;
+    margin-bottom: .65rem; letter-spacing: .02em;
+}
+.cpb-template-title { font-size: .96rem; font-weight: 700; color: var(--cpb-ink); margin-bottom: .35rem; }
+.cpb-template-description { font-size: .82rem; line-height: 1.45; color: var(--cpb-muted); }
+.cpb-template-empty { padding: 1rem; border: 1px dashed var(--cpb-border); border-radius: 10px; color: var(--cpb-muted); }
+.cpb-stepper {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem;
+    margin: 0 0 1rem; padding: .55rem; border: 1px solid var(--cpb-border);
+    border-radius: var(--cpb-radius); background: var(--cpb-surface);
+}
+.cpb-step {
+    min-width: 0; padding: .55rem .65rem; border-radius: 9px; border: 1px solid transparent;
+}
+.cpb-step.active { background: var(--cpb-accent-soft); border-color: #c4b5fd; }
+.cpb-step.completed { background: #ecfdf5; border-color: #a7f3d0; }
+.cpb-step.upcoming { background: var(--cpb-subtle); }
+.cpb-step-kicker { display: block; font-size: .68rem; font-weight: 700; color: var(--cpb-muted); }
+.cpb-step-label { display: block; font-size: .84rem; font-weight: 700; color: var(--cpb-ink); white-space: nowrap; }
+.cpb-step-state { display: block; font-size: .68rem; color: var(--cpb-muted); }
+.cpb-quality {
+    display: flex; align-items: center; gap: .65rem; justify-content: flex-end;
+    padding: .45rem .65rem; border: 1px solid var(--cpb-border); border-radius: 10px;
+    background: var(--cpb-surface);
+}
+.cpb-quality-score { font-size: 1.15rem; line-height: 1; font-weight: 800; color: var(--cpb-accent-2); }
+.cpb-quality-copy { font-size: .7rem; line-height: 1.25; color: var(--cpb-muted); }
+.cpb-quality-row { display: flex; gap: .6rem; align-items: flex-start; padding: .55rem 0; border-bottom: 1px solid var(--cpb-border); }
+.cpb-quality-row:last-child { border-bottom: none; }
+.cpb-quality-mark { flex: none; width: 1.4rem; height: 1.4rem; display: grid; place-items: center; border-radius: 50%; font-weight: 800; }
+.cpb-quality-mark.pass { color: #065f46; background: #d1fae5; }
+.cpb-quality-mark.warn { color: #92400e; background: #fef3c7; }
+.cpb-quality-label { font-size: .84rem; font-weight: 700; color: var(--cpb-ink); }
+.cpb-quality-hint { font-size: .76rem; color: var(--cpb-muted); line-height: 1.4; }
+.cpb-prompt { max-width: none; border-left: 3px solid var(--cpb-accent-2); box-shadow: var(--cpb-shadow-sm); }
+[data-testid="stChatMessage"], [data-testid="stExpander"] details, [data-testid="stMetric"] { box-shadow: var(--cpb-shadow-sm); }
+[data-testid="stSidebar"] { background: #f4f2f8; }
+.stButton > button, .stDownloadButton > button { min-height: 2.65rem; border-radius: 9px; }
+.stButton > button[kind="primary"] { background: var(--cpb-accent-2); box-shadow: none; }
+.stButton > button[kind="primary"]:hover { background: var(--cpb-accent); box-shadow: none; filter: none; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, [role="radio"]:focus-visible,
+[role="combobox"]:focus-visible, a:focus-visible {
+    outline: 3px solid #c4b5fd !important; outline-offset: 2px !important;
+}
+/* Keep Streamlit's Material Symbols ligature font intact to avoid icon names
+   appearing as text when the app-wide system font is applied. */
+[data-testid="stIconMaterial"], [class*="material-symbols"], [class*="material-icons"] {
+    font-family: "Material Symbols Rounded", "Material Symbols Outlined", "Material Icons" !important;
+}
+@media (max-width: 700px) {
+    .block-container { padding: .7rem .75rem 9.5rem; max-width: 100%; }
+    .cpb-header { align-items: flex-start; margin-bottom: .75rem; }
+    .cpb-header .cpb-logo { width: 38px; height: 38px; font-size: 1.15rem; }
+    .cpb-header h1 { font-size: 1.05rem; }
+    .cpb-header p { font-size: .78rem; line-height: 1.4; }
+    .cpb-stepper { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem; padding: .4rem; }
+    .cpb-step { padding: .45rem .5rem; }
+    .cpb-step-label { white-space: normal; }
+    [data-testid="stHorizontalBlock"] { flex-wrap: wrap; gap: .5rem; }
+    [data-testid="column"] { min-width: min(100%, 18rem) !important; flex: 1 1 100% !important; width: 100% !important; }
+    .cpb-template-card { min-height: 0; }
+    .cpb-prompt { padding: 1rem; font-size: .9rem; line-height: 1.6; }
+    [data-testid="stBottom"] { padding-bottom: env(safe-area-inset-bottom); }
+    [data-testid="stChatInput"] { border-radius: 12px !important; }
+    .stButton > button, .stDownloadButton > button { width: 100%; min-height: 2.8rem; }
+}
+</style>
+"""
+
+# Final palette layer for the approved deep-navy / professional blue-cyan visual
+# system. It intentionally contains only visual overrides, leaving app behavior
+# in the render functions below.
+_NAVY_CSS = """
+<style>
+:root {
+    --cpb-ink: #0b1f3a;
+    --cpb-muted: #40566f;
+    --cpb-faint: #60758b;
+    --cpb-border: #cbd8e6;
+    --cpb-surface: #ffffff;
+    --cpb-subtle: #edf5fb;
+    --cpb-canvas: #f4f8fc;
+    --cpb-accent: #087ea4;
+    --cpb-accent-2: #145da0;
+    --cpb-accent-soft: #dff4fb;
+    --cpb-ok: #067a68;
+    --cpb-pending: #9a5b00;
+    --cpb-shadow: 0 1px 2px rgba(6, 32, 58, .08), 0 10px 28px rgba(20, 93, 160, .07);
+    --cpb-shadow-sm: 0 1px 3px rgba(6, 32, 58, .09);
+}
+html, body, .stApp { overflow-x: hidden; color-scheme: light; }
+::-webkit-scrollbar-thumb { background: #a9c8da; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: #7eacc4; background-clip: content-box; }
+.stApp { background: linear-gradient(180deg, #edf6fc 0, #f7fafc 18rem, #f4f8fc 100%); }
+.block-container { min-width: 0; }
+.cpb-header { background: #ffffff; border-color: #bfd3e3; box-shadow: var(--cpb-shadow); }
+.cpb-header .cpb-logo, .cpb-sidebrand-logo {
+    background: linear-gradient(145deg, #0b2d52, #145da0 68%, #0e9fba);
+}
+.cpb-header h1 { color: #0b2d52; }
+.cpb-empty { background: linear-gradient(135deg, #ffffff, #edf8fc); border-color: #bfd3e3; }
+.cpb-template-category, .cpb-demo-note { color: #0b5278; background: #dff4fb; border-color: #b8dfed; }
+.cpb-template-card:hover { border-color: #4d9dc5; box-shadow: 0 8px 22px rgba(20,93,160,.12); }
+.cpb-step.active { background: #e3f3fb; border-color: #8cc9e2; }
+.cpb-step.completed { background: #e7f7f2; border-color: #90d4c4; }
+.cpb-step.upcoming { background: #f1f5f9; }
+.cpb-prompt { border-left-color: #0e91b8; color: #18324d; }
+.cpb-prompt .cpb-prompt-h { color: #0b658d; border-color: #cbd8e6; }
+.cpb-prompt .cpb-prompt-p, .cpb-prompt .cpb-prompt-list li { color: #18324d; }
+.cpb-prompt .cpb-prompt-quote { border-left-color: #0e9fba; background: #e8f7fb; color: #344f69; }
+.cpb-prompt code, .stCode, [data-testid="stCode"] pre { background: #eaf4fb !important; border-color: #bfd3e3 !important; color: #0b5278 !important; }
+.stCode code, [data-testid="stCode"] code { color: #0b5278 !important; }
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) { background: #edf7fc; border-color: #b8dbea; }
+[data-testid="stSidebar"] { background: #eaf2f8; border-right-color: #b9cddd; }
+.stButton > button, .stDownloadButton > button { min-height: 2.75rem; border-color: #aac5d8; color: #0b5278; }
+.stButton > button:not([kind="primary"]) p { color: #0b5278 !important; }
+.stButton > button:hover, .stDownloadButton > button:hover { border-color: #1686ad; background: #e3f4fa; color: #08496b; }
+.stButton > button[kind="primary"] { background: #145da0; color: #ffffff; }
+.stButton > button[kind="primary"]:hover { background: #0b4c86; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, [role="radio"]:focus-visible,
+[role="combobox"]:focus-visible, a:focus-visible { outline: 3px solid #59c7e3 !important; outline-offset: 2px !important; }
+[data-testid="stChatInput"] { border-color: #9fc4d9 !important; box-shadow: 0 10px 26px rgba(11,45,82,.13) !important; }
+[data-testid="stChatInput"]:focus-within { border-color: #0e91b8 !important; box-shadow: 0 0 0 3px #c7edf7, 0 10px 26px rgba(11,45,82,.13) !important; }
+[data-testid="stChatInput"] button { background: #145da0 !important; }
+[data-testid="stSlider"] [role="slider"] { background: #087ea4 !important; border-color: #087ea4 !important; }
+[data-testid="stProgress"] [role="progressbar"] > div { background: linear-gradient(90deg, #145da0, #0e9fba); }
+[data-testid="stMetricValue"], .cpb-quality-score { color: #0b5278; }
+.cpb-chip { align-items: flex-start; }
+.cpb-chip.captured .cpb-dot { background: var(--cpb-ok); }
+.cpb-chip .cpb-name { overflow-wrap: anywhere; }
+.cpb-chip .cpb-req { text-align: right; white-space: nowrap; }
+@media (max-width: 700px) {
+    .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] { max-width: 100vw; overflow-x: hidden; }
+    .cpb-header, .cpb-stepper, .cpb-empty, .cpb-prompt, .cpb-template-card { max-width: 100%; box-sizing: border-box; }
+    .cpb-quality { justify-content: flex-start; }
+}
+</style>
+"""
+
+# Product-shell additions: route context, landing-page cards, accessible
+# navigation, and responsive controls. This is kept separate from the existing
+# component skin so the established Builder and dashboard styling remains intact.
+_SHELL_CSS = """
+<style>
+.cpb-page-context { margin: 0 0 .9rem; }
+.cpb-breadcrumb { margin: 0 0 .3rem; color: var(--cpb-muted); font-size: .78rem; }
+.cpb-breadcrumb strong { color: var(--cpb-ink); }
+.cpb-page-heading { margin: 0; color: #0b2d52; font-size: 1.55rem; line-height: 1.2; letter-spacing: -.025em; }
+.cpb-page-subheading { margin: .35rem 0 0; max-width: 72ch; color: var(--cpb-muted); font-size: .93rem; line-height: 1.55; }
+.cpb-hero {
+    padding: clamp(1.4rem, 4vw, 2.6rem); border: 1px solid #b8d5e6; border-radius: 18px;
+    background: linear-gradient(135deg, #fff 5%, #e9f7fc 62%, #dff4fb 100%);
+    box-shadow: var(--cpb-shadow); margin-bottom: 1rem;
+}
+.cpb-hero-badge, .cpb-status-pill {
+    display: inline-block; padding: .25rem .6rem; border-radius: 999px; border: 1px solid #acd9e8;
+    background: #f7fdff; color: #0b5278; font-size: .72rem; font-weight: 750; letter-spacing: .025em;
+}
+.cpb-hero h2 { margin: .7rem 0 .55rem; max-width: 20ch; color: #082f56; font-size: clamp(1.75rem, 4vw, 2.55rem); line-height: 1.08; letter-spacing: -.04em; }
+.cpb-hero p { margin: 0; max-width: 65ch; color: #344f69; font-size: 1rem; line-height: 1.65; }
+.cpb-section-title { margin: 1.6rem 0 .25rem; color: #0b2d52; font-size: 1.12rem; }
+.cpb-section-copy { margin: 0 0 .8rem; color: var(--cpb-muted); font-size: .87rem; }
+.cpb-card, .cpb-resume, .cpb-preview {
+    height: 100%; box-sizing: border-box; padding: 1rem; border: 1px solid var(--cpb-border);
+    border-radius: 12px; background: #fff; box-shadow: var(--cpb-shadow-sm); overflow-wrap: anywhere;
+}
+.cpb-card h3, .cpb-resume h3, .cpb-preview h3 { margin: 0 0 .35rem; color: #0b2d52; font-size: .96rem; }
+.cpb-card p, .cpb-resume p, .cpb-preview p { margin: 0; color: var(--cpb-muted); font-size: .82rem; line-height: 1.5; }
+.cpb-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .65rem; }
+.cpb-flow-step { min-width: 0; padding: .9rem; border: 1px solid var(--cpb-border); border-radius: 11px; background: #fff; }
+.cpb-flow-step b { display: block; color: #0b5278; font-size: .83rem; margin-bottom: .25rem; }
+.cpb-flow-step span { color: var(--cpb-muted); font-size: .76rem; line-height: 1.4; }
+.cpb-action-bar {
+    display: flex; align-items: center; gap: .55rem; padding: .65rem; margin: 0 0 1rem;
+    border: 1px solid var(--cpb-border); border-radius: 12px; background: rgba(255,255,255,.94);
+}
+.cpb-action-label { margin-right: auto; color: var(--cpb-muted); font-size: .78rem; font-weight: 700; }
+.cpb-preview { margin: .6rem 0 1rem; border-left: 4px solid #0e91b8; }
+.cpb-preview-meta { color: #0b5278; font-size: .76rem; font-weight: 700; margin-bottom: .5rem; }
+.cpb-preview-excerpt { max-height: 16rem; overflow: auto; white-space: pre-wrap; padding: .8rem; border-radius: 9px; background: #edf6fb; color: #18324d; font-size: .8rem; line-height: 1.5; }
+.cpb-privacy-note { padding: .8rem 1rem; border-left: 4px solid #087ea4; background: #e8f7fb; color: #24445f; border-radius: 0 10px 10px 0; font-size: .84rem; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label { min-height: 2.75rem; padding: .35rem .45rem; border-radius: 9px; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label:hover { background: #dcecf5; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label p { font-weight: 700; color: #173b5c; }
+[data-testid="stSidebarCollapseButton"] button, [data-testid="stSidebarCollapsedControl"] button { min-width: 2.75rem; min-height: 2.75rem; }
+.stButton > button, .stDownloadButton > button, button { min-height: 2.75rem; }
+[data-testid="stBaseButton-primary"] { background: #145da0 !important; color: #fff !important; }
+[data-testid="stBaseButton-primary"]:hover { background: #0b4c86 !important; color: #fff !important; }
+[data-testid="stBaseButton-primary"] p,
+[data-testid="stBaseButton-primary"] span { color: #fff !important; }
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}
+@media (max-width: 700px) {
+    [data-testid="stHeader"] { background: #edf6fc !important; min-height: 3rem; border-bottom: 1px solid rgba(185,205,221,.65); }
+    [data-testid="stMain"] .block-container { padding-top: 3.25rem !important; }
+    .cpb-page-heading { font-size: 1.16rem; line-height: 1.15; }
+    .cpb-page-subheading { font-size: .84rem; }
+    .cpb-hero { padding: 1rem; border-radius: 14px; }
+    .cpb-hero h2 { font-size: 1.45rem; line-height: 1.08; margin: .55rem 0 .4rem; }
+    .cpb-hero p { font-size: .9rem; line-height: 1.5; }
+    .cpb-flow { grid-template-columns: 1fr 1fr; }
+    .cpb-action-bar { align-items: stretch; flex-direction: column; }
+    .cpb-action-label { margin: 0; }
+    .cpb-preview-excerpt { max-height: 12rem; }
+    [data-testid="stSidebar"] { max-width: min(88vw, 22rem); }
+}
+@media (max-width: 430px) {
+    .cpb-flow { grid-template-columns: 1fr; }
+}
+</style>
+"""
+
 
 # --- LLM client construction (lazy) -----------------------------------------
 def _build_llm_client() -> LlmClient:
@@ -585,8 +926,36 @@ def _build_llm_client() -> LlmClient:
     client (for example a missing key) surfaces as
     :class:`~prompt_builder.llm_client.LlmError`, which the callers turn into an
     error banner with a Retry control.
+
+    The client is wrapped in :class:`~prompt_builder.telemetry.InstrumentedLlmClient`
+    so every agent call is measured (latency, outcome, tokens) in one place. A
+    failure to even build the client (typically a missing API key) is recorded as
+    a failed ``client_init`` call before the error propagates, so it counts
+    against availability.
     """
-    return OpenAiLlmClient()
+    try:
+        client = OpenAiLlmClient()
+    except LlmError as exc:
+        telemetry.record_failed_call("client_init", exc)
+        raise
+    return telemetry.InstrumentedLlmClient(client)
+
+
+def _record_event(
+    name: str,
+    *,
+    success: Optional[bool] = None,
+    duration_s: Optional[float] = None,
+) -> None:
+    """Record a product-level event, never letting telemetry break the app."""
+    try:
+        telemetry.get_store().record_event(
+            telemetry.AppEvent(
+                ts=time.time(), name=name, success=success, duration_s=duration_s
+            )
+        )
+    except Exception:  # noqa: BLE001 - observability is best-effort
+        pass
 
 
 # --- Session state helpers --------------------------------------------------
@@ -598,6 +967,52 @@ def _get_session() -> Optional[Session]:
 def _set_session(session: Optional[Session]) -> None:
     """Store the current Session back into ``session_state``."""
     st.session_state[SESSION_KEY] = session
+
+
+def _navigate(destination: str) -> None:
+    """Change pages without touching the current in-memory Session."""
+    navigation.navigate(st.session_state, destination, route_key=ROUTE_KEY)
+
+
+def _on_navigation_change() -> None:
+    """Copy the sidebar widget selection into the non-widget route state."""
+    navigation.navigate(
+        st.session_state,
+        st.session_state.get(VIEW_KEY),
+        route_key=ROUTE_KEY,
+    )
+
+
+def _start_new_prompt() -> None:
+    """Reset only Builder-session state and navigate to a fresh Builder."""
+    _set_session(conversation_manager.reset_session())
+    for key in (
+        PENDING_ERROR_KEY,
+        CONTEXT_UNAVAILABLE_KEY,
+        COPY_CONFIRMED_KEY,
+        EDIT_MODE_KEY,
+        EDIT_DRAFT_KEY,
+        REJECTED_INPUT_KEY,
+        REJECTED_ERROR_KEY,
+        DEMO_MODE_KEY,
+        PENDING_QUESTION_KEY,
+    ):
+        st.session_state.pop(key, None)
+    _navigate(BUILDER_VIEW)
+
+
+def _selected_depth() -> str:
+    """Return the semantic prompt depth in normalized planner form."""
+    return adaptive_planner.normalize_depth(st.session_state.get(PROMPT_DEPTH_KEY, "Adaptive"))
+
+
+def _sync_prompt_plan(spec: PromptSpecification, request_text: Optional[str] = None) -> adaptive_planner.TaskPlan:
+    """Apply the current depth choice and inferred task type to a specification."""
+    spec.prompt_depth = _selected_depth()
+    plan = adaptive_planner.plan_prompt(spec, request_text=request_text)
+    spec.task_type = plan.task_type
+    spec.resolved_depth = plan.depth
+    return plan
 
 
 def _current_settings() -> GenerationSettings:
@@ -644,6 +1059,7 @@ def _load_demo_example(example: dict) -> None:
 
     # Build the spec from the hardcoded collected parameters (status "collected").
     spec = PromptSpecification(goal_confidence=1.0, goal=example["goal"])
+    _sync_prompt_plan(spec, example["request"])
     for name, value in example["params"].items():
         spec.parameters[name] = ParameterValue(
             name=name,
@@ -675,10 +1091,16 @@ def _load_demo_example(example: dict) -> None:
     st.session_state.pop(PENDING_ERROR_KEY, None)
     st.session_state.pop(CONTEXT_UNAVAILABLE_KEY, None)
     st.session_state.pop(COPY_CONFIRMED_KEY, None)
+    st.session_state.pop(EDIT_MODE_KEY, None)
+    st.session_state.pop(EDIT_DRAFT_KEY, None)
     st.session_state.pop(REJECTED_INPUT_KEY, None)
     st.session_state.pop(REJECTED_ERROR_KEY, None)
-    # Mark this Session as a demo so the prompt panel shows the "no AI" ribbon.
+    st.session_state.pop(PENDING_QUESTION_KEY, None)
+    # Mark this Session as a demo so the prompt panel shows the "no AI" ribbon,
+    # then move to Builder/Review. Route changes do not alter Session content.
     st.session_state[DEMO_MODE_KEY] = True
+    _navigate(BUILDER_VIEW)
+    _record_event("demo_loaded")
 
 
 def _system_message(text: str) -> Message:
@@ -746,20 +1168,83 @@ def _run_turn(session: Session) -> None:
         spec.goal = interpretation.goal
     spec.goal_confidence = interpretation.confidence
 
-    missing = missing_parameters(spec)
+    # Resolve the previous adaptive question. Explicit skip responses decline all
+    # requested fields. A response from which none of those fields could be
+    # extracted consumes one retry attempt without storing the same free text in
+    # several unrelated fields.
+    pending_names = st.session_state.pop(PENDING_QUESTION_KEY, None)
+    if pending_names:
+        pending = elicitation_engine.FollowUpQuestion(list(pending_names), "")
+        normalized_answer = latest_text.strip().casefold()
+        if not normalized_answer or normalized_answer in elicitation_engine.SKIP_INDICATIONS:
+            elicitation_engine.handle_answer(spec, pending, latest_text)
+        else:
+            captured = {item.name for item in interpretation.extracted}
+            objective_satisfied = "objective" in pending_names and bool(spec.goal)
+            if not (captured.intersection(pending_names) or objective_satisfied):
+                elicitation_engine.handle_answer(spec, pending, latest_text, usable=False)
 
-    # If required parameters remain and we are under the question limit, ask the
-    # next elicitation question (Req 3.1, 3.8); otherwise generate (Req 4.1).
-    if missing and not elicitation_engine.question_limit_reached(session):
-        question = elicitation_engine.next_question(spec, session)
-        if question is not None:
-            session.follow_up_count += 1
-            conversation_manager.add_message(session, _system_message(question.text))
-            return
+    _advance_after_resolution(session, request_text=spec.goal or latest_text)
 
-    # No required parameters missing (or limit reached / nothing askable): produce
-    # the Generated_Prompt. A failure here is handled as a generation error.
+
+def _advance_after_resolution(session: Session, *, request_text: str = "") -> None:
+    """Ask the next eligible question or generate when no question remains.
+
+    This shared transition is used after a typed answer and after the explicit
+    Skip control. It retains the existing max-question and retry rules and never
+    re-asks fields whose elicitation status has been declined.
+    """
+    spec = session.spec if session.spec is not None else PromptSpecification(goal_confidence=0.0)
+    session.spec = spec
+    if spec.task_type is not None:
+        plan = _sync_prompt_plan(spec, request_text or spec.goal)
+        if (
+            adaptive_planner.should_ask_follow_up(spec, plan)
+            and not elicitation_engine.question_limit_reached(session)
+        ):
+            question = elicitation_engine.next_question(
+                spec,
+                session,
+                plan=plan,
+                adaptive=True,
+                request_text=request_text or spec.goal,
+            )
+            if question is not None:
+                session.follow_up_count += 1
+                st.session_state[PENDING_QUESTION_KEY] = list(question.parameters)
+                conversation_manager.add_message(session, _system_message(question.text))
+                return
+    else:
+        missing = missing_parameters(spec)
+        if missing and not elicitation_engine.question_limit_reached(session):
+            question = elicitation_engine.next_question(spec, session)
+            if question is not None:
+                session.follow_up_count += 1
+                st.session_state[PENDING_QUESTION_KEY] = list(question.parameters)
+                conversation_manager.add_message(session, _system_message(question.text))
+                return
+
+    st.session_state.pop(PENDING_QUESTION_KEY, None)
     _generate_prompt(session)
+
+
+def _skip_pending_question(session: Session) -> tuple[str, ...]:
+    """Decline all fields in the current question and advance safely."""
+    spec = session.spec if session.spec is not None else PromptSpecification(goal_confidence=0.0)
+    session.spec = spec
+    skipped = navigation.skip_pending_fields(
+        spec, st.session_state.get(PENDING_QUESTION_KEY)
+    )
+    if not skipped:
+        return ()
+    st.session_state.pop(PENDING_QUESTION_KEY, None)
+    labels = [catalog.get_definition(name).label if catalog.get_definition(name) else name for name in skipped]
+    conversation_manager.add_message(
+        session,
+        _system_message("Skipped for this session: " + ", ".join(label or name for label, name in zip(labels, skipped)) + "."),
+    )
+    _advance_after_resolution(session, request_text=spec.goal or "")
+    return skipped
 
 
 def _generate_prompt(session: Session) -> None:
@@ -770,6 +1255,8 @@ def _generate_prompt(session: Session) -> None:
     (Req 4.5, 8.2).
     """
     spec = session.spec if session.spec is not None else PromptSpecification(goal_confidence=0.0)
+    if spec.task_type is not None:
+        _sync_prompt_plan(spec)
     try:
         llm = _build_llm_client()
         generator = PromptGenerator(llm)
@@ -784,6 +1271,7 @@ def _generate_prompt(session: Session) -> None:
 
     st.session_state.pop(PENDING_ERROR_KEY, None)
     session.generated_prompt = result.prompt
+    _record_event("prompt_generated", success=not result.prompt.omitted_required)
 
 
 def _retry_generate(session: Session) -> None:
@@ -808,6 +1296,7 @@ def _retry_generate(session: Session) -> None:
     if result.succeeded and result.value is not None:
         session.generated_prompt = result.value
         st.session_state.pop(PENDING_ERROR_KEY, None)
+        _record_event("prompt_generated", success=not result.value.omitted_required)
     else:
         st.session_state[PENDING_ERROR_KEY] = {
             "stage": "generate",
@@ -816,7 +1305,9 @@ def _retry_generate(session: Session) -> None:
         }
 
 
-def _submit_revision(session: Session, revision_text: str) -> None:
+def _submit_revision(
+    session: Session, revision_text: str, *, is_retry: bool = False
+) -> None:
     """Record and apply a revision request under the retry controller (Req 5.2).
 
     Records the revision request in the Session (Req 5.2), then drives
@@ -842,6 +1333,11 @@ def _submit_revision(session: Session, revision_text: str) -> None:
     controller: RetryController[GeneratedPrompt] = RetryController(retry_on=(LlmError,))
     result = controller.run(operation)
 
+    # Feed the retry-recovery SLO: count this run when the user explicitly
+    # retried, or when it needed more than one attempt, or when it failed.
+    if is_retry or result.attempts > 1 or not result.succeeded:
+        _record_event("retry_run", success=result.succeeded)
+
     if result.succeeded and result.value is not None:
         session.generated_prompt = result.value
         st.session_state.pop(PENDING_ERROR_KEY, None)
@@ -857,73 +1353,360 @@ def _submit_revision(session: Session, revision_text: str) -> None:
 
 
 # --- Rendering --------------------------------------------------------------
-def _render_header() -> None:
-    """Render a minimal, bordered app header."""
+def _render_header(page: navigation.Page) -> None:
+    """Render lightweight breadcrumb and page-specific context."""
+    import html
+
     st.markdown(
-        f"""
-        <div class="cpb-header">
-            <div class="cpb-logo">{PAGE_ICON}</div>
-            <div class="cpb-head-text">
-                <h1>{PAGE_TITLE}</h1>
-                <p>{PAGE_TAGLINE}</p>
-            </div>
-        </div>
-        """,
+        '<div class="cpb-page-context">'
+        '<p class="cpb-breadcrumb">Prompt Builder / '
+        f'<strong>{html.escape(page.label)}</strong></p>'
+        f'<h1 class="cpb-page-heading">{html.escape(page.heading)}</h1>'
+        f'<p class="cpb-page-subheading">{html.escape(page.subheading)}</p>'
+        '</div>',
         unsafe_allow_html=True,
     )
 
 
+def _render_stepper(session: Optional[Session]) -> None:
+    """Render the accessible four-stage session progress indicator."""
+    steps = frontend.derive_stepper(session)
+    parts = ['<div class="cpb-stepper" aria-label="Session progress">']
+    for index, step in enumerate(steps, start=1):
+        marker = "✓" if step.status == "completed" else str(index)
+        parts.append(
+            f'<div class="cpb-step {step.status}" aria-label="{step.label}: {step.state_label}">'
+            f'<span class="cpb-step-kicker">{marker} · Step {index}</span>'
+            f'<span class="cpb-step-label">{step.label}</span>'
+            f'<span class="cpb-step-state">{step.state_label}</span></div>'
+        )
+    parts.append("</div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
+
+
+def _render_template_preview(example: dict) -> None:
+    """Render a non-mutating template preview with enough prompt context."""
+    import html
+
+    st.markdown(
+        '<div class="cpb-preview">'
+        f'<div class="cpb-preview-meta">{html.escape(example["category"])} · Demo template · No AI call</div>'
+        f'<h3>{html.escape(example["title"])}</h3>'
+        f'<p>{html.escape(example["description"])}</p>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="cpb-preview-excerpt">{html.escape(example["prompt"])}</div>',
+        unsafe_allow_html=True,
+    )
+    preview_use, preview_close = st.columns([1, 1])
+    with preview_use:
+        if st.button(
+            "Use this template",
+            key=f"demo_preview_use_{DEMO_EXAMPLES.index(example)}",
+            type="primary",
+            width="stretch",
+            help="Seeds a demo review session without calling an AI model.",
+        ):
+            _load_demo_example(example)
+            st.rerun()
+    with preview_close:
+        if st.button("Close preview", key="template_preview_close", width="stretch"):
+            st.session_state.pop(TEMPLATE_PREVIEW_KEY, None)
+            st.rerun()
+
+
+def _clear_template_filters() -> None:
+    """Clear gallery controls before Streamlit recreates their widgets."""
+    navigation.clear_template_filters(st.session_state)
+
+
+def _render_template_gallery(*, featured: bool = False) -> None:
+    """Render featured cards or the full searchable no-LLM template library."""
+    import html
+
+    if featured:
+        matches = DEMO_EXAMPLES[:3]
+    else:
+        filter_row = st.columns([3, 2, 1])
+        with filter_row[0]:
+            query = st.text_input(
+                "Search templates",
+                key=navigation.TEMPLATE_SEARCH_KEY,
+                placeholder="Search by goal, topic, or format",
+                help="Searches template titles, descriptions, requests, goals, and categories.",
+            )
+        with filter_row[1]:
+            category = st.selectbox(
+                "Category",
+                frontend.template_categories(DEMO_EXAMPLES),
+                key=navigation.TEMPLATE_CATEGORY_KEY,
+            )
+        with filter_row[2]:
+            st.markdown('<div style="height:1.78rem"></div>', unsafe_allow_html=True)
+            st.button(
+                "Clear filters",
+                key="template_clear_filters",
+                width="stretch",
+                on_click=_clear_template_filters,
+                help="Show all six templates.",
+            )
+        matches = frontend.filter_templates(DEMO_EXAMPLES, query, category)
+        st.caption(f"{len(matches)} of {len(DEMO_EXAMPLES)} templates shown · All are pre-written demos; previewing never calls the AI.")
+
+        selected_title = st.session_state.get(TEMPLATE_PREVIEW_KEY)
+        selected = next((item for item in DEMO_EXAMPLES if item["title"] == selected_title), None)
+        if selected is not None:
+            _render_template_preview(selected)
+
+    if not matches:
+        st.markdown(
+            '<div class="cpb-template-empty"><b>No templates match.</b> '
+            "Try another search, choose a different category, or clear the filters.</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    for start in range(0, len(matches), 2):
+        cols = st.columns(2)
+        for col, example in zip(cols, matches[start : start + 2]):
+            index = DEMO_EXAMPLES.index(example)
+            with col:
+                st.markdown(
+                    '<div class="cpb-template-card">'
+                    f'<span class="cpb-template-category">{html.escape(example["category"])}</span>'
+                    f'<div class="cpb-template-title">{html.escape(example["title"])}</div>'
+                    f'<div class="cpb-template-description">{html.escape(example["description"])}</div>'
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                if featured:
+                    if st.button(
+                        "Use template",
+                        key=f"demo_home_use_{index}",
+                        width="stretch",
+                        type="primary",
+                        help="Open a pre-written demo in Builder without an AI call.",
+                    ):
+                        _load_demo_example(example)
+                        st.rerun()
+                else:
+                    preview_col, use_col = st.columns(2)
+                    with preview_col:
+                        if st.button(
+                            "Preview",
+                            key=f"template_preview_{index}",
+                            width="stretch",
+                            help="Inspect the prompt without replacing your current session.",
+                        ):
+                            navigation.select_template_preview(st.session_state, example["title"])
+                            st.rerun()
+                    with use_col:
+                        if st.button(
+                            "Use template",
+                            key=f"demo_template_use_{index}",
+                            width="stretch",
+                            type="primary",
+                            help="Seed a demo session and open Builder/Review. No AI call.",
+                        ):
+                            _load_demo_example(example)
+                            st.rerun()
+
+
 def _render_empty_state() -> None:
-    """Render a friendly welcome/empty state before the first message."""
+    """Render a focused Builder first-use state with a Templates route."""
     st.markdown(
         """
         <div class="cpb-empty">
-            <h3>Let's build your prompt</h3>
-            <p>Describe what you want in plain language. I'll ask a few short
-            follow-ups, then synthesize a polished prompt you can copy.</p>
+            <h3>Start with one clear outcome</h3>
+            <p>Use the chat input below to describe what you want. The builder will
+            identify useful details, ask focused follow-ups, and create a prompt you can edit and export.</p>
             <ol>
-                <li>Say what you're trying to create and who it's for</li>
-                <li>Answer a couple of quick questions (or skip any)</li>
-                <li>Review, revise, and copy the generated prompt</li>
+                <li>Describe the result in plain language</li>
+                <li>Answer or skip focused detail questions</li>
+                <li>Generate, review, edit, and export</li>
             </ol>
         </div>
         """,
         unsafe_allow_html=True,
     )
     st.markdown("")
+    if st.button("Browse templates", key="builder_browse_templates", width="stretch"):
+        _navigate(TEMPLATES_VIEW)
+        st.rerun()
+
+
+def _render_builder_action_bar(session: Optional[Session]) -> None:
+    """Render explicit Builder navigation and state-changing actions."""
+    st.markdown('<p class="cpb-eyebrow">Builder actions</p>', unsafe_allow_html=True)
+    actions = st.columns(4)
+    with actions[0]:
+        if st.button("Home", key="builder_home", width="stretch", help="Return home without clearing this session."):
+            _navigate(HOME_VIEW)
+            st.rerun()
+    with actions[1]:
+        label = "Start over" if navigation.resume_state(session).available else "New prompt"
+        if st.button(label, key="builder_new_prompt", width="stretch", help="Clear this prompt session and start a new one."):
+            _start_new_prompt()
+            st.rerun()
+    with actions[2]:
+        if st.button("Templates", key="builder_templates", width="stretch", help="Browse all no-AI demo templates."):
+            _navigate(TEMPLATES_VIEW)
+            st.rerun()
+    with actions[3]:
+        if navigation.can_generate_now(session):
+            if st.button(
+                "Generate now",
+                key="builder_generate_now",
+                type="primary",
+                width="stretch",
+                help="Generate from captured details now. Missing required details will be reported.",
+            ):
+                st.session_state.pop(PENDING_QUESTION_KEY, None)
+                with st.spinner("Generating from the details captured so far..."):
+                    _generate_prompt(session)
+                _set_session(session)
+                st.rerun()
+        else:
+            st.caption("Generate now appears after you share an idea.")
+
+    pending = st.session_state.get(PENDING_QUESTION_KEY)
+    if session is not None and pending and session.generated_prompt is None:
+        if st.button(
+            "Skip this question",
+            key="builder_skip_question",
+            width="stretch",
+            help="Marks every detail in this question as declined so it will not be asked again.",
+        ):
+            with st.spinner("Skipping this question and checking what comes next..."):
+                _skip_pending_question(session)
+            _set_session(session)
+            st.rerun()
+
+
+def _render_home(session: Optional[Session]) -> None:
+    """Render the useful landing page and its state-preserving actions."""
     st.markdown(
-        '<p class="cpb-eyebrow">Try an example (instant, no AI key needed)</p>',
+        """
+        <section class="cpb-hero">
+          <span class="cpb-hero-badge">GUIDED PROMPT WORKSPACE</span>
+          <h2>From a rough idea to a prompt you can actually use</h2>
+          <p>Describe the outcome in your own words. The Builder plans a focused interview,
+          captures relevant constraints, then creates a detailed prompt you can edit, revise,
+          copy, or export.</p>
+        </section>
+        """,
         unsafe_allow_html=True,
     )
-    st.caption(
-        "Pick one and press its button to see a ready-made prompt right away. "
-        "Or just type your own message below to build one with AI."
+    primary, secondary = st.columns(2)
+    with primary:
+        if st.button("Start building a prompt", key="home_start", type="primary", width="stretch"):
+            _start_new_prompt()
+            st.rerun()
+    with secondary:
+        if st.button("Browse templates", key="home_templates", width="stretch"):
+            _navigate(TEMPLATES_VIEW)
+            st.rerun()
+
+    resume = navigation.resume_state(session)
+    if resume.available:
+        prompt_status = "Prompt ready for review" if resume.has_prompt else "Prompt not generated yet"
+        st.markdown(
+            '<div class="cpb-resume">'
+            '<span class="cpb-status-pill">CURRENT IN-MEMORY SESSION</span>'
+            '<h3>Resume current prompt</h3>'
+            f'<p>Current step: <b>{resume.current_step}</b> · {resume.captured_details} details captured · '
+            f'{resume.message_count} messages · {prompt_status}.</p>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("Resume current prompt", key="home_resume", type="primary", width="stretch"):
+            _navigate(BUILDER_VIEW)
+            st.rerun()
+
+    st.markdown('<h2 class="cpb-section-title">How it works</h2>', unsafe_allow_html=True)
+    st.markdown('<p class="cpb-section-copy">The same four stages stay visible while you build.</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="cpb-flow">'
+        '<div class="cpb-flow-step"><b>1 · Idea</b><span>State the outcome in plain language.</span></div>'
+        '<div class="cpb-flow-step"><b>2 · Details</b><span>Answer relevant questions or skip what you do not know.</span></div>'
+        '<div class="cpb-flow-step"><b>3 · Generate</b><span>Create now or wait until coverage is complete.</span></div>'
+        '<div class="cpb-flow-step"><b>4 · Review</b><span>Edit, revise, copy, and export the result.</span></div>'
+        '</div>',
+        unsafe_allow_html=True,
     )
-    # Lay the examples out in a tidy grid of up to 3 per row so adding more
-    # examples never squashes the cards into unreadable narrow columns.
-    per_row = 3
-    for start in range(0, len(DEMO_EXAMPLES), per_row):
-        row = DEMO_EXAMPLES[start : start + per_row]
-        cols = st.columns(per_row)
-        for col, example in zip(cols, row):
-            with col:
-                st.markdown(
-                    f"""
-                    <div class="cpb-example-card">
-                        <div class="cpb-example-title">{example['title']}</div>
-                        <div class="cpb-example-text">{example['request']}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                if st.button(
-                    "Show example prompt",
-                    key=f"demo_{example['title']}",
-                    use_container_width=True,
-                    type="primary",
-                ):
-                    _load_demo_example(example)
-                    st.rerun()
+
+    st.markdown('<h2 class="cpb-section-title">Featured templates</h2>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="cpb-section-copy"><b>Demo templates are pre-written and make no AI call.</b> '
+        'Live generation begins only after you submit your own idea or choose Generate now.</p>',
+        unsafe_allow_html=True,
+    )
+    _render_template_gallery(featured=True)
+
+    st.markdown('<h2 class="cpb-section-title">Built for practical prompt work</h2>', unsafe_allow_html=True)
+    capabilities = (
+        ("Adaptive interview", "Question depth follows the task, so simple requests stay focused and complex work gets more coverage."),
+        ("Ready-to-use output", "Generated prompts include structure, constraints, missing-information behavior, and a clear output contract."),
+        ("Local editing and export", "Edit without an AI call, then export Markdown, plain text, or scrubbed JSON."),
+        ("Model controls", "Tune runtime temperature, token cap, sampling, penalties, and stop sequences separately from prompt depth."),
+        ("Private in-memory operation", "Sessions and metrics remain in memory. Telemetry stores timing and counts, never prompt or message text."),
+    )
+    for start in range(0, len(capabilities), 3):
+        columns = st.columns(min(3, len(capabilities) - start))
+        for column, (title, copy) in zip(columns, capabilities[start : start + 3]):
+            with column:
+                st.markdown(f'<div class="cpb-card"><h3>{title}</h3><p>{copy}</p></div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="cpb-privacy-note"><b>Start quickly:</b> type an idea in the message box below, or use the primary action above for a clean Builder session.</div>', unsafe_allow_html=True)
+
+
+def _render_guide() -> None:
+    """Render concise guidance in scannable, keyboard-accessible sections."""
+    with st.expander("What makes a prompt strong", expanded=True):
+        st.markdown(
+            "A strong prompt names the **objective**, relevant **context and inputs**, intended **audience**, "
+            "important **constraints**, and the exact **output format**. Concrete limits and a definition of done "
+            "reduce guesswork. If facts matter, say how the model should handle uncertainty and sources."
+        )
+    with st.expander("Prompt depth: Adaptive, Focused, Detailed, Comprehensive"):
+        st.markdown(
+            "- **Adaptive** selects depth from the task and is the recommended default.\n"
+            "- **Focused** asks only for essentials and produces a concise prompt.\n"
+            "- **Detailed** adds richer context, constraints, and quality checks.\n"
+            "- **Comprehensive** collects the fullest brief and suits complex, reusable work."
+        )
+    with st.expander("Prompt depth versus runtime model settings"):
+        st.markdown(
+            "Prompt depth controls the *semantic detail and interview plan*. **Max tokens** is only a runtime cap "
+            "on model output. Temperature and top-p affect sampling, while penalties affect repetition. "
+            "Changing those controls does not automatically make the prompt itself more detailed."
+        )
+    with st.expander("Demo templates versus live AI generation"):
+        st.markdown(
+            "Templates are pre-written demonstrations. Previewing or using one makes **no model call**. "
+            "A live call happens only after you submit your own message, choose **Generate now**, retry a failed call, "
+            "or request an AI revision."
+        )
+    with st.expander("Edit, revise, copy, and export"):
+        st.markdown(
+            "Use **Edit locally** for changes that should not call AI. Use **Revise with AI** for a model-assisted rewrite. "
+            "The raw prompt code block provides the browser's copy control. The server cannot verify whether a browser "
+            "clipboard write succeeded. Exports are available as Markdown, plain text, and JSON."
+        )
+    with st.expander("Privacy and telemetry"):
+        st.markdown(
+            "Sessions and metrics are held in memory only and disappear when the process restarts. There is no account "
+            "or database. Telemetry records operational timing, outcomes, token counts, and estimated cost; it never "
+            "stores prompt text or message text. Export metadata is scrubbed of credential-labelled fields."
+        )
+    with st.expander("Troubleshooting API keys and failed calls"):
+        st.markdown(
+            "If no API key is configured, live actions show a safe error and keep your Session. Add the configured "
+            "OpenAI-compatible API key to the environment, restart Streamlit, and choose **Retry**. For provider or "
+            "network failures, wait briefly and retry. After repeated failures, your captured details and prompt remain available."
+        )
 
 
 def _render_history(session: Session) -> None:
@@ -981,6 +1764,10 @@ def _render_error_banner(session: Session) -> None:
         if st.button("Retry", key="retry_button"):
             with st.spinner("Retrying..."):
                 _retry_generate(session) if stage == "generate" else _run_turn(session)
+            # The retry recovered if no error is pending afterwards.
+            _record_event(
+                "retry_run", success=st.session_state.get(PENDING_ERROR_KEY) is None
+            )
             _set_session(session)
             st.rerun()
     elif stage == "revise":
@@ -988,7 +1775,7 @@ def _render_error_banner(session: Session) -> None:
         revision_text = error.get("revision_text", "")
         if revision_text and st.button("Retry", key="retry_button"):
             with st.spinner("Retrying the revision..."):
-                _submit_revision(session, revision_text)
+                _submit_revision(session, revision_text, is_retry=True)
             _set_session(session)
             st.rerun()
 
@@ -1083,74 +1870,161 @@ def _render_prompt_html(text: str) -> str:
     return "<div class='cpb-prompt'>" + "".join(html_parts) + "</div>"
 
 
+def _save_local_prompt_edit(session: Session, text: str) -> bool:
+    """Save a non-empty local edit while preserving omitted-required metadata."""
+    if session.generated_prompt is None or not text.strip():
+        return False
+    session.generated_prompt = GeneratedPrompt(
+        text=text,
+        omitted_required=list(session.generated_prompt.omitted_required),
+    )
+    return True
+
+
+def _render_quality_breakdown(score: frontend.QualityScore) -> None:
+    """Render the deterministic score dimensions with non-color status labels."""
+    with st.expander("Quality score breakdown", expanded=False):
+        st.caption(
+            "This deterministic score checks prompt structure and coverage. "
+            "It does not verify facts or guarantee model output quality."
+        )
+        for dimension in score.dimensions:
+            mark = "✓" if dimension.passed else "!"
+            css = "pass" if dimension.passed else "warn"
+            detail = dimension.evidence if dimension.passed else dimension.improvement_hint
+            st.markdown(
+                '<div class="cpb-quality-row">'
+                f'<span class="cpb-quality-mark {css}" aria-hidden="true">{mark}</span>'
+                '<div>'
+                f'<div class="cpb-quality-label">{dimension.label} · {dimension.status_label}</div>'
+                f'<div class="cpb-quality-hint">{detail}</div>'
+                "</div></div>",
+                unsafe_allow_html=True,
+            )
+
+
 def _render_prompt_panel(session: Session) -> None:
-    """Render the Generated_Prompt panel with Revise and Copy controls (Req 4.3, 5.1-5.7)."""
+    """Render prompt review, local editing, quality, copy, export, and revision."""
     prompt = session.generated_prompt
     if prompt is None:
         return
 
     st.divider()
-    # When the prompt came from a hardcoded demo example, make that explicit.
     if st.session_state.get(DEMO_MODE_KEY):
         st.markdown(
-            '<span class="cpb-demo-note">EXAMPLE PROMPT · NO AI CALL</span>',
+            '<span class="cpb-demo-note">TEMPLATE PREVIEW · NO AI CALL</span>',
             unsafe_allow_html=True,
         )
-    st.markdown(
-        '<div class="cpb-panel-title">Generated prompt</div>',
-        unsafe_allow_html=True,
+
+    quality_plan = adaptive_planner.plan_prompt(session.spec) if session.spec is not None else None
+    quality = frontend.score_prompt_quality(
+        prompt.text,
+        depth=quality_plan.depth if quality_plan is not None else None,
     )
-
-    # Primary, reader-friendly display: the prompt rendered as wrapping, readable
-    # prose (no horizontal scroll, comfortable line length and spacing, section
-    # headings styled). This is the main view users read.
-    st.markdown(_render_prompt_html(prompt.text), unsafe_allow_html=True)
-
-    # The raw, selectable/copyable source lives in an expander so the built-in
-    # ``st.code`` copy affordance (Req 5.5) is still available without forcing a
-    # wide monospace block into the main reading flow.
-    with st.expander("View raw / copy source", expanded=False):
-        st.code(prompt.text, language="markdown")
-
-    # A one-shot copy confirmation (Req 5.6). The explicit confirm button lets the
-    # app surface a server-side confirmation indication in addition to the
-    # built-in copy affordance.
-    col_copy, _ = st.columns([1, 3])
-    with col_copy:
-        if st.button("Copy prompt", key="copy_button", use_container_width=True, type="primary"):
-            st.session_state[COPY_CONFIRMED_KEY] = True
-    if st.session_state.get(COPY_CONFIRMED_KEY):
-        st.success("Prompt copied. Open 'View raw / copy source' and use the copy icon if needed.")
-        st.session_state[COPY_CONFIRMED_KEY] = False
-
-    # Report any required parameters that were omitted (Req 4.4).
-    if prompt.omitted_required:
-        st.info(
-            "These required details were not provided and are omitted: "
-            + ", ".join(prompt.omitted_required)
+    title_col, score_col = st.columns([3, 1])
+    with title_col:
+        st.markdown('<div class="cpb-panel-title">Generated prompt</div>', unsafe_allow_html=True)
+        st.caption("Review the prompt, make local edits, or export it for use elsewhere.")
+    with score_col:
+        st.markdown(
+            '<div class="cpb-quality" aria-label="Prompt quality score '
+            f'{quality.overall} out of 100">'
+            f'<span class="cpb-quality-score">{quality.overall}</span>'
+            '<span class="cpb-quality-copy">/ 100<br>structure score</span></div>',
+            unsafe_allow_html=True,
         )
 
-    # Revise control: validate the request, then revise through the retry
-    # controller (Req 5.1, 5.2, 5.3).
-    with st.expander("Revise this prompt", expanded=False):
-        # Revision is an LLM-backed operation. Demo prompts are hardcoded and were
-        # produced with NO AI call, so revising them would need an API key and
-        # otherwise fail with a confusing generic error. Make that explicit and
-        # skip the LLM round-trip entirely in demo mode.
+    if st.session_state.get(EDIT_MODE_KEY):
+        st.info("Local edit mode does not call the AI. Save replaces only this session's prompt text.")
+        if EDIT_DRAFT_KEY not in st.session_state:
+            st.session_state[EDIT_DRAFT_KEY] = prompt.text
+        edited_text = st.text_area(
+            "Edit prompt text",
+            key=EDIT_DRAFT_KEY,
+            height=420,
+            help="Edit the complete prompt. Save changes updates the current session; Cancel discards the draft.",
+        )
+        save_col, cancel_col, _ = st.columns([1, 1, 2])
+        with save_col:
+            save_clicked = st.button("Save changes", key="save_prompt_edit", type="primary", width="stretch")
+        with cancel_col:
+            cancel_clicked = st.button("Cancel", key="cancel_prompt_edit", width="stretch")
+        if save_clicked:
+            if _save_local_prompt_edit(session, edited_text):
+                _set_session(session)
+                st.session_state.pop(EDIT_MODE_KEY, None)
+                st.session_state.pop(EDIT_DRAFT_KEY, None)
+                st.rerun()
+            else:
+                st.error("The prompt cannot be empty. Add prompt text or choose Cancel.")
+        if cancel_clicked:
+            st.session_state.pop(EDIT_MODE_KEY, None)
+            st.session_state.pop(EDIT_DRAFT_KEY, None)
+            st.rerun()
+    else:
+        st.markdown(_render_prompt_html(prompt.text), unsafe_allow_html=True)
+
+        action_copy, action_edit, action_md, action_txt, action_json = st.columns([1.15, 1.15, 1, 1, 1])
+        with action_copy:
+            if st.button("Copy prompt", key="copy_button", width="stretch", type="primary"):
+                st.session_state[COPY_CONFIRMED_KEY] = True
+        with action_edit:
+            if st.button("Edit locally", key="edit_prompt_button", width="stretch"):
+                st.session_state[EDIT_MODE_KEY] = True
+                st.session_state[EDIT_DRAFT_KEY] = prompt.text
+                st.rerun()
+
+        exports = frontend.build_prompt_exports(
+            prompt,
+            settings=frontend.settings_metadata(_current_settings()),
+            metadata={
+                "source": "template" if st.session_state.get(DEMO_MODE_KEY) else "builder",
+                "quality_score": quality.overall,
+                "quality_dimensions_passed": quality.passed,
+            },
+        )
+        for column, export in zip((action_md, action_txt, action_json), exports):
+            with column:
+                st.download_button(
+                    f"Export {export.label}",
+                    export.data,
+                    file_name=export.file_name,
+                    mime=export.mime,
+                    key=f"export_{export.file_name}",
+                    width="stretch",
+                )
+
+        if st.session_state.get(COPY_CONFIRMED_KEY):
+            st.success(
+                "Copy control is ready below. Use the browser copy icon; this server cannot verify whether the text was copied successfully."
+            )
+            st.session_state[COPY_CONFIRMED_KEY] = False
+
+        with st.expander("Raw prompt and browser copy", expanded=False):
+            st.caption("Use the copy icon in the code block. Clipboard access happens in your browser; this server cannot verify success.")
+            st.code(prompt.text, language="markdown")
+
+    _render_quality_breakdown(quality)
+
+    if prompt.omitted_required:
+        st.info(
+            "Required details not included: " + ", ".join(prompt.omitted_required)
+        )
+
+    with st.expander("Revise with AI", expanded=False):
         if st.session_state.get(DEMO_MODE_KEY):
             st.info(
-                "This is a pre-written example prompt (no AI was used), so it "
-                "can't be revised here. Type your own message below to build a "
-                "prompt with AI, then revise that one."
+                "This template preview is pre-written and uses no AI. Start with your own message "
+                "to generate a prompt that can be revised with AI. You can still use Edit locally above."
             )
         else:
             with st.form("revise_form", clear_on_submit=False):
                 revision_text = st.text_area(
-                    "Request a revision",
+                    "Revision request",
                     key="revision_input",
-                    placeholder="Describe how you'd like the prompt changed...",
+                    placeholder="Describe the change you want...",
                 )
-                submitted = st.form_submit_button("Revise", use_container_width=True)
+                submitted = st.form_submit_button("Revise", width="stretch")
             if submitted:
                 result = validation.validate_revision(revision_text)
                 if not result.ok:
@@ -1189,23 +2063,36 @@ def _handle_submission(raw_text: str) -> None:
         # the text for re-editing and the error below it.
         st.session_state[REJECTED_INPUT_KEY] = raw_text
         st.session_state[REJECTED_ERROR_KEY] = message
+        _record_event("validation_rejected")
         # Do NOT call the LLM for invalid input.
         return
 
     # Accepted: drop any retained rejected text/error from a previous attempt.
     st.session_state.pop(REJECTED_INPUT_KEY, None)
     st.session_state.pop(REJECTED_ERROR_KEY, None)
+    # Submitting an idea from Home is an explicit request to enter the Builder.
+    _navigate(BUILDER_VIEW)
     # A real typed message leaves demo mode (this turn goes through the LLM).
     st.session_state.pop(DEMO_MODE_KEY, None)
 
     session = _get_session()
+    is_fresh_session = session is None or not session.messages
     if session is None:
         session = conversation_manager.start_session(raw_text)
     else:
         session = conversation_manager.add_message(session, _user_message(raw_text))
+    if is_fresh_session and session.spec is not None:
+        _sync_prompt_plan(session.spec, raw_text)
 
+    turn_started = time.perf_counter()
     with st.spinner("Thinking..."):
         _run_turn(session)
+    # A turn succeeded if it finished without leaving an error banner pending.
+    _record_event(
+        "turn",
+        success=st.session_state.get(PENDING_ERROR_KEY) is None,
+        duration_s=time.perf_counter() - turn_started,
+    )
     _set_session(session)
 
 
@@ -1225,53 +2112,61 @@ def _user_message(text: str) -> Message:
     )
 
 
+def _render_prompt_depth(session: Optional[Session]) -> None:
+    """Render semantic depth control; Adaptive is the default."""
+    st.markdown('<p class="cpb-eyebrow">Prompt depth</p>', unsafe_allow_html=True)
+    selected = st.selectbox(
+        "Prompt depth",
+        PROMPT_DEPTH_OPTIONS,
+        index=0,
+        key=PROMPT_DEPTH_KEY,
+        label_visibility="collapsed",
+        help=(
+            "Adaptive keeps simple requests focused and expands complex work. "
+            "This controls prompt planning and detail, not the max_tokens runtime cap."
+        ),
+    )
+    if session is not None and session.spec is not None:
+        session.spec.prompt_depth = adaptive_planner.normalize_depth(selected)
+        plan = adaptive_planner.plan_prompt(session.spec)
+        st.caption(f"Effective depth: {plan.depth.title()} · {plan.task_type.title()} task")
+    else:
+        st.caption("Adaptive keeps simple tasks concise and expands complex tasks.")
+
+
 def _render_parameter_tracker(session: Optional[Session]) -> None:
-    """Render a sidebar progress tracker for the catalog parameters.
-
-    Read-only view: for each catalog parameter it shows whether a value has been
-    collected, declined, or is still missing, plus whether it's required. This is
-    pure presentation derived from the spec; it does not change any behavior.
-    """
-    st.markdown('<p class="cpb-eyebrow">Prompt details</p>', unsafe_allow_html=True)
+    """Render compact adaptive coverage without listing irrelevant catalog fields."""
+    st.markdown('<p class="cpb-eyebrow">Brief coverage</p>', unsafe_allow_html=True)
     spec = session.spec if session is not None else None
-    params = spec.parameters if spec is not None else {}
+    if spec is None:
+        st.caption("Relevant details will appear after you describe the task.")
+        return
 
-    # Render the catalog parameters first (required/optional), then any additional
-    # parameters captured on the spec that aren't in the catalog (the richer demo
-    # examples carry extra, prompt-specific attributes). The union keeps the
-    # catalog logic untouched while still surfacing everything collected.
-    catalog_names = [definition.name for definition in catalog.CATALOG]
-    extra_names = [name for name in params if name not in catalog_names]
+    plan = adaptive_planner.plan_prompt(spec)
+    items = adaptive_planner.coverage_items(spec, plan)
+    relevant = [item for item in items if item.status != "optional"]
+    captured = sum(item.status == "captured" for item in relevant)
+    st.progress(
+        captured / len(relevant) if relevant else 1.0,
+        text=f"{captured} of {len(relevant)} relevant details captured",
+    )
+    st.caption(plan.rationale + " Skipped details stay skipped.")
 
-    collected = sum(1 for v in params.values() if v.status == "collected")
-    total = len(catalog_names) + len(extra_names)
-    st.progress(collected / total if total else 0.0, text=f"{collected} of {total} captured")
-
-    def _chip(name: str, required: bool) -> None:
-        value = params.get(name)
-        if value is not None and value.status == "collected":
-            state = "collected"
-        elif value is not None and value.status == "declined":
-            state = "declined"
-        else:
-            state = "missing"
-        req_label = "required" if required else "optional"
-        display = name.replace("_", " ")
+    for item in relevant:
+        symbol = {"captured": "✓", "missing": "?", "declined": "—"}[item.status]
         st.markdown(
-            f"""
-            <div class="cpb-chip {state}">
-                <span class="cpb-dot"></span>
-                <span class="cpb-name">{display}</span>
-                <span class="cpb-req">{req_label}</span>
-            </div>
-            """,
+            f'<div class="cpb-chip {item.status}">'
+            f'<span class="cpb-dot" aria-hidden="true"></span>'
+            f'<span class="cpb-name">{item.label}</span>'
+            f'<span class="cpb-req">{symbol} {item.status}</span></div>',
             unsafe_allow_html=True,
         )
 
-    for definition in catalog.CATALOG:
-        _chip(definition.name, definition.required)
-    for name in extra_names:
-        _chip(name, required=False)
+    optional = [item for item in items if item.status == "optional"]
+    if optional:
+        with st.expander(f"Other captured details ({len(optional)})", expanded=False):
+            for item in optional:
+                st.caption(f"✓ {item.label}")
 
 
 def _render_model_settings() -> None:
@@ -1339,7 +2234,7 @@ def _render_model_settings() -> None:
         help="Strings that halt generation. Leave blank for none.",
     )
 
-    if st.button("Reset to defaults", key="reset_settings_button", use_container_width=True):
+    if st.button("Reset to defaults", key="reset_settings_button", width="stretch"):
         st.session_state[TEMPERATURE_KEY] = _DEFAULT_TEMPERATURE
         st.session_state[MAX_TOKENS_KEY] = _DEFAULT_MAX_TOKENS
         st.session_state[TOP_P_KEY] = _DEFAULT_TOP_P
@@ -1350,7 +2245,7 @@ def _render_model_settings() -> None:
 
 
 def _render_sidebar(session: Optional[Session]) -> None:
-    """Render the sidebar: session info, parameter tracker, and new-session control (Req 6.5, 7.5)."""
+    """Render persistent global navigation and page-relevant Builder controls."""
     with st.sidebar:
         st.markdown(
             f"""
@@ -1361,31 +2256,65 @@ def _render_sidebar(session: Optional[Session]) -> None:
             """,
             unsafe_allow_html=True,
         )
-        st.caption("A guided interview that writes your prompt for you.")
+        st.caption("Guided prompt design, review, and operational insight.")
 
-        # New-session control (Req 6.5, 7.5).
-        if st.button("New session", key="new_session_button", use_container_width=True):
-            # Start a fresh empty Session and clear transient UI flags so the view
-            # clears the previous conversation and Prompt_Specification (Req 6.5, 7.5).
-            _set_session(conversation_manager.reset_session())
-            st.session_state.pop(PENDING_ERROR_KEY, None)
-            st.session_state.pop(CONTEXT_UNAVAILABLE_KEY, None)
-            st.session_state.pop(COPY_CONFIRMED_KEY, None)
-            st.session_state.pop(REJECTED_INPUT_KEY, None)
-            st.session_state.pop(REJECTED_ERROR_KEY, None)
-            st.session_state.pop(DEMO_MODE_KEY, None)
+        page_keys = [page.key for page in navigation.PAGES]
+        # Synchronize the visible control before it is instantiated. Buttons
+        # update ROUTE_KEY, while this widget callback updates ROUTE_KEY from a
+        # keyboard/mouse navigation selection.
+        st.session_state[VIEW_KEY] = navigation.resolve_page(
+            st.session_state.get(ROUTE_KEY)
+        ).key
+        st.radio(
+            "Navigation",
+            page_keys,
+            key=VIEW_KEY,
+            format_func=lambda key: navigation.PAGE_BY_KEY[key].navigation_label,
+            help="Use arrow keys to move between pages after focusing this control.",
+            on_change=_on_navigation_change,
+        )
+
+        current_page = navigation.resolve_page(st.session_state.get(ROUTE_KEY))
+        if current_page.key != BUILDER_VIEW:
+            if st.button(
+                "New prompt",
+                key="nav_new_prompt",
+                type="primary",
+                width="stretch",
+                help="Open Builder with a new empty in-memory session.",
+            ):
+                _start_new_prompt()
+                st.rerun()
+            resume = navigation.resume_state(session)
+            if resume.available:
+                st.caption(
+                    f"Current session: {resume.current_step} · "
+                    + ("prompt ready" if resume.has_prompt else f"{resume.captured_details} details")
+                )
+            if current_page.key == HOME_VIEW:
+                st.divider()
+                _render_prompt_depth(session)
+                with st.expander("Advanced model settings", expanded=False):
+                    _render_model_settings()
+            return
+
+        # Keep the established key for compatibility with original Session tests.
+        if st.button("New session", key="new_session_button", width="stretch"):
+            _start_new_prompt()
             st.rerun()
+
+        st.divider()
+        _render_prompt_depth(session)
 
         st.divider()
         _render_parameter_tracker(session)
 
         st.divider()
-        with st.expander("⚙️ Model settings", expanded=False):
+        with st.expander("Advanced model settings", expanded=False):
             _render_model_settings()
 
-        # Lightweight session stats.
         st.divider()
-        st.markdown('<p class="cpb-eyebrow">Session</p>', unsafe_allow_html=True)
+        st.markdown('<p class="cpb-eyebrow">Session status</p>', unsafe_allow_html=True)
         message_count = len(session.messages) if session is not None else 0
         follow_ups = session.follow_up_count if session is not None else 0
         col_a, col_b = st.columns(2)
@@ -1394,52 +2323,75 @@ def _render_sidebar(session: Optional[Session]) -> None:
 
 
 def main() -> None:
-    """Render the chat UI and wire the conversation flow."""
+    """Render the persistent shell and the selected product page."""
     st.set_page_config(
         page_title=PAGE_TITLE,
         page_icon=PAGE_ICON,
         layout="wide",
-        initial_sidebar_state="expanded",
+        # Native Streamlit behavior opens the sidebar on desktop and keeps it
+        # closed on narrow screens, where its built-in control remains visible.
+        initial_sidebar_state="auto",
     )
     st.markdown(_CUSTOM_CSS, unsafe_allow_html=True)
+    st.markdown(_SAAS_CSS, unsafe_allow_html=True)
+    st.markdown(_NAVY_CSS, unsafe_allow_html=True)
+    st.markdown(_SHELL_CSS, unsafe_allow_html=True)
 
     session = _get_session()
+    if ROUTE_KEY not in st.session_state:
+        seeded_view = st.session_state.get(VIEW_KEY)
+        st.session_state[ROUTE_KEY] = (
+            navigation.resolve_page(seeded_view).key
+            if seeded_view is not None
+            else navigation.initial_page_key(session)
+        )
+    else:
+        st.session_state[ROUTE_KEY] = navigation.resolve_page(
+            st.session_state.get(ROUTE_KEY)
+        ).key
 
     _render_sidebar(session)
-    _render_header()
+    page = navigation.resolve_page(st.session_state.get(ROUTE_KEY))
+    _render_header(page)
 
-    # Center the conversation column for a more readable, app-like layout.
-    _left, center, _right = st.columns([1, 6, 1])
-    with center:
+    if page.key == HOME_VIEW:
+        _render_home(session)
+    elif page.key == TEMPLATES_VIEW:
+        _render_template_gallery()
+    elif page.key == OBSERVABILITY_VIEW:
+        dashboard.render_dashboard(show_header=False)
+        return
+    elif page.key == GUIDE_VIEW:
+        _render_guide()
+        return
+    else:
+        _render_builder_action_bar(session)
         has_messages = session is not None and bool(session.messages)
+        _render_stepper(session)
 
-        # Empty / welcome state before the first message.
         if not has_messages:
             _render_empty_state()
-
-        # Conversation history (oldest at top, newest at bottom) — Req 6.1, 6.2.
-        if has_messages:
+        else:
             _render_history(session)
 
-        # Prior-context note and any pending error banner with Retry.
         _render_context_note()
         if session is not None:
             _render_error_banner(session)
 
-        # Re-surface the text of a rejected submission so it isn't lost (Req 1.4, 1.5).
         _render_retained_input()
-
-        # Prompt panel (shown once a prompt exists) — Req 4.3, 5.1-5.7.
         session = _get_session()
         if session is not None:
             _render_prompt_panel(session)
 
-    # The free-text input (Req 1.1). Pinned to the bottom of the page by
-    # ``st.chat_input``. Returns the submitted text on this rerun.
-    raw_text = st.chat_input("Describe what you want to build...")
-    if raw_text is not None:
-        _handle_submission(raw_text)
-        st.rerun()
+    # Home keeps a direct idea-entry path to satisfy the original open-screen
+    # input requirement. Templates, Observability, and Guide intentionally do
+    # not show a chat box; their visible navigation provides Builder access.
+    if page.key in {HOME_VIEW, BUILDER_VIEW}:
+        placeholder = "Describe what you want to build..."
+        raw_text = st.chat_input(placeholder)
+        if raw_text is not None:
+            _handle_submission(raw_text)
+            st.rerun()
 
 
 if __name__ == "__main__":

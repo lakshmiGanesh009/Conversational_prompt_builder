@@ -17,6 +17,11 @@ class ParameterDefinition:
     name: ParameterName
     required: bool
     default_value: Optional[str] = None
+    # Optional presentation metadata. Appended with defaults so existing callers
+    # and positional construction remain backward compatible.
+    label: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
 
 
 @dataclass
@@ -41,6 +46,11 @@ class PromptSpecification:
     goal: Optional[str] = None
     parameters: dict[ParameterName, ParameterValue] = field(default_factory=dict)
     overwrite_log: list[Overwrite] = field(default_factory=list)
+    # Adaptive prompt controls are optional and defaulted for compatibility with
+    # sessions and tests created before the richer brief model existed.
+    prompt_depth: str = "adaptive"
+    task_type: Optional[str] = None
+    resolved_depth: Optional[str] = None
 
 
 MessageSender = Literal["user", "system"]

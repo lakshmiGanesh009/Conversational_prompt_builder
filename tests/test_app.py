@@ -324,3 +324,49 @@ def test_copy_button_confirms_on_success() -> None:
     assert not at.exception
     assert len(at.success) >= 1
     assert any("copied" in msg.value.lower() for msg in at.success)
+
+
+# --- professional frontend: local prompt editing ---------------------------
+def test_local_prompt_edit_save_updates_text_and_preserves_omissions() -> None:
+    """Saving Edit mode updates only prompt text and keeps omission metadata."""
+    session = _session_with_prompt()
+    session.generated_prompt.omitted_required = ["tone"]
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["session"] = session
+
+    with patch(CLIENT_SYMBOL, return_value=MockLlmClient.with_responses()):
+        at.run()
+        edit = _button_by_key(at, "edit_prompt_button")
+        assert edit is not None
+        edit.click().run()
+        draft = next(area for area in at.text_area if area.key == "prompt_edit_draft")
+        draft.set_value("# Edited prompt\nUse the saved local text.").run()
+        save = _button_by_key(at, "save_prompt_edit")
+        assert save is not None
+        save.click().run()
+
+    saved = at.session_state["session"].generated_prompt
+    assert saved.text == "# Edited prompt\nUse the saved local text."
+    assert saved.omitted_required == ["tone"]
+    assert _button_by_key(at, "edit_prompt_button") is not None
+
+
+def test_local_prompt_edit_cancel_leaves_prompt_unchanged() -> None:
+    """Cancel discards the local draft without replacing the current prompt."""
+    session = _session_with_prompt()
+    original = session.generated_prompt.text
+    at = AppTest.from_file(APP_PATH)
+    at.session_state["session"] = session
+
+    with patch(CLIENT_SYMBOL, return_value=MockLlmClient.with_responses()):
+        at.run()
+        _button_by_key(at, "edit_prompt_button").click().run()
+        next(area for area in at.text_area if area.key == "prompt_edit_draft").set_value(
+            "This draft must be discarded."
+        ).run()
+        cancel = _button_by_key(at, "cancel_prompt_edit")
+        assert cancel is not None
+        cancel.click().run()
+
+    assert at.session_state["session"].generated_prompt.text == original
+    assert _button_by_key(at, "edit_prompt_button") is not None

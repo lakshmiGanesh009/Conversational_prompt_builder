@@ -388,6 +388,7 @@ class IntentAnalyzer:
         request = LlmRequest(
             prompt=_build_prompt(message, context_text),
             system=_INTERPRET_SYSTEM,
+            operation="interpret",
         )
 
         # Let LlmError propagate: the caller leaves the Session unchanged and

@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional, Union
 
 from prompt_builder import catalog
+from prompt_builder.adaptive_planner import TaskPlan, field_question, plan_prompt, relevant_missing_fields
 from prompt_builder.intent_analyzer import missing_parameters
 from prompt_builder.models import (
     ParameterName,
@@ -92,6 +93,7 @@ class FollowUpQuestion:
     parameters: list[ParameterName]
     text: str
     suggested_defaults: dict[ParameterName, str] = field(default_factory=dict)
+    rationale: dict[ParameterName, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -206,75 +208,77 @@ def _askable_missing(spec: PromptSpecification) -> list[ParameterName]:
 
 
 def _phrase_question(
-    names: list[ParameterName], suggested_defaults: dict[ParameterName, str]
-) -> str:
-    """Build deterministic question text for the chosen parameters.
+    names: list[ParameterName],
+    suggested_defaults: dict[ParameterName, str],
+    *,
+    adaptive: bool = False,
+) -> tuple[str, dict[ParameterName, str]]:
+    """Build clear deterministic wording, including why adaptive fields matter."""
+    if adaptive:
+        lines = ["A few details will make the prompt more useful:"]
+        rationale: dict[ParameterName, str] = {}
+        for name in names:
+            question, why = field_question(name)
+            rationale[name] = why
+            default = suggested_defaults.get(name)
+            suffix = f" Suggested default: {default}." if default else ""
+            lines.append(f"- {question} {why}{suffix}")
+        lines.append("Answer in plain language, accept a suggested default, or say ‘skip’. ")
+        return "\n".join(lines).rstrip(), rationale
 
-    The LLM phrases questions in the running app; this deterministic phrasing
-    keeps the engine pure and testable (no network) while still producing clear,
-    human-readable text. Any suggested defaults are mentioned so the user knows a
-    default is on offer (Req 3.5).
-    """
     if len(names) == 1:
         subject = names[0]
     elif len(names) == 2:
         subject = f"{names[0]} and {names[1]}"
     else:
         subject = ", ".join(names[:-1]) + f", and {names[-1]}"
-
     text = f"Could you tell me about the {subject}?"
     if suggested_defaults:
-        hints = ", ".join(
-            f"{name} (default: {value})"
-            for name, value in suggested_defaults.items()
-        )
+        hints = ", ".join(f"{name} (default: {value})" for name, value in suggested_defaults.items())
         text += f" If you're not sure, I can use these defaults: {hints}."
-    return text
+    return text, {}
 
 
 def next_question(
-    spec: PromptSpecification, session: Session
+    spec: PromptSpecification,
+    session: Session,
+    *,
+    plan: Optional[TaskPlan] = None,
+    adaptive: bool = False,
+    request_text: Optional[str] = None,
+    max_parameters: int = MAX_PARAMETERS_PER_QUESTION,
 ) -> Optional[FollowUpQuestion]:
-    """Build the next follow-up question, or ``None`` when there is nothing to ask.
+    """Build the next relevant 1-3 field question, or ``None`` at completion/limit.
 
-    Returns ``None`` when the Session has reached the question limit (Req 3.8) or
-    when no missing required parameter is eligible to be asked (all required
-    parameters are collected, declined, or out of attempts). Otherwise picks the
-    first 1-3 eligible missing parameters in catalog order (Req 3.1, 3.2), attaches
-    the catalog default value of each (when it has one) as a suggested answer
-    (Req 3.5), and phrases a question for them.
-
-    This function does not mutate ``spec`` or ``session`` and performs no I/O; it
-    simply reports what should be asked next. The caller increments the Session's
-    follow-up count when it actually presents the question.
-
-    Args:
-        spec: The current specification, used to derive the missing parameters.
-        session: The current Session, used for the question-limit check.
-
-    Returns:
-        A :class:`FollowUpQuestion` for 1-3 missing parameters, or ``None`` when
-        nothing should be asked.
+    The default call preserves the original globally-required catalog behavior.
+    The application opts into adaptive planning, which limits candidates to the
+    selected task profile and prompt depth.
     """
     if question_limit_reached(session):
         return None
 
-    eligible = _askable_missing(spec)
+    if adaptive or plan is not None:
+        active_plan = plan or plan_prompt(spec, request_text=request_text)
+        eligible = [name for name in relevant_missing_fields(spec, active_plan) if _askable(spec, name)]
+    else:
+        eligible = _askable_missing(spec)
     if not eligible:
         return None
 
-    chosen = eligible[:MAX_PARAMETERS_PER_QUESTION]
-
+    cap = max(1, min(int(max_parameters), MAX_PARAMETERS_PER_QUESTION))
+    chosen = eligible[:cap]
     suggested_defaults: dict[ParameterName, str] = {}
     for name in chosen:
         definition = catalog.get_definition(name)
         if definition is not None and definition.default_value is not None:
             suggested_defaults[name] = definition.default_value
 
+    text, rationale = _phrase_question(chosen, suggested_defaults, adaptive=(adaptive or plan is not None))
     return FollowUpQuestion(
         parameters=list(chosen),
-        text=_phrase_question(chosen, suggested_defaults),
+        text=text,
         suggested_defaults=suggested_defaults,
+        rationale=rationale,
     )
 
 

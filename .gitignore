@@ -16,3 +16,10 @@ env/
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Local UI and browser-test artifacts (dev-only)
+.shots/
+.playwright/
+playwright-report/
+blob-report/
+test-results/
