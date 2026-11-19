@@ -73,7 +73,10 @@ def test_templates_filter_preview_clear_and_use_template() -> None:
     assert any("1 of 6 templates shown" in caption.value for caption in at.caption)
 
     _button(at, "template_preview_1").click().run()
-    assert "30-day Python study plan" in _markdown(at)
+    preview_markup = _markdown(at)
+    assert "30-day Python study plan" in preview_markup
+    assert "cpb-preview-excerpt" in preview_markup
+    assert "cpb-prompt-h" in preview_markup
     assert at.session_state["session"].id == session.id
     assert at.session_state["session"].generated_prompt is None
 
@@ -156,5 +159,40 @@ def test_shell_css_keeps_mobile_navigation_and_accessibility_guards() -> None:
     assert "max-width: min(88vw, 22rem)" in css
     assert "prefers-reduced-motion: reduce" in css
     assert "min-height: 2.75rem" in css
+    assert "--cpb-surface-elevated" in css
+    assert "--cpb-danger" in css
+    assert "--cpb-focus" in css
+    assert "label:has(input:checked)" in css
+    assert "cpb-session-utility" in css
+    assert "grid-template-columns: 1fr 1fr" in css
     assert "overflow-x: hidden" in app._NAVY_CSS
     assert "material-symbols" in app._SAAS_CSS
+
+
+def test_visual_tokens_have_one_canonical_definition_and_no_legacy_palette() -> None:
+    """Named layers stay compatible while one token source controls the active palette."""
+    import app
+
+    all_css = app._CUSTOM_CSS + app._SAAS_CSS + app._NAVY_CSS + app._SHELL_CSS
+    for token in (
+        "--cpb-canvas:",
+        "--cpb-surface:",
+        "--cpb-surface-elevated:",
+        "--cpb-border:",
+        "--cpb-text:",
+        "--cpb-muted:",
+        "--cpb-primary:",
+        "--cpb-cyan:",
+        "--cpb-success:",
+        "--cpb-warning:",
+        "--cpb-danger:",
+        "--cpb-focus:",
+        "--cpb-shadow-sm:",
+        "--cpb-radius-md:",
+        "--cpb-space-1:",
+    ):
+        assert all_css.count(token) == 1
+
+    lowered = all_css.lower()
+    for legacy in ("#7c3aed", "#8b5cf6", "#a855f7", "#ec4899", "#db2777", "#f6f2ff", "#fdf2f8"):
+        assert legacy not in lowered

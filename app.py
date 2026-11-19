@@ -54,7 +54,12 @@ from prompt_builder import (
     validation,
 )
 from prompt_builder.intent_analyzer import IntentAnalyzer, merge_parameters, missing_parameters
-from prompt_builder.llm_client import LlmClient, LlmError, OpenAiLlmClient
+from prompt_builder.llm_client import (
+    LlmClient,
+    LlmError,
+    OpenAiLlmClient,
+    provider_status_label,
+)
 from prompt_builder.models import (
     GeneratedPrompt,
     Message,
@@ -145,31 +150,12 @@ from prompt_builder.demo_examples import DEMO_EXAMPLES
 
 
 # --- Theming ----------------------------------------------------------------
-# A small, self-contained stylesheet aiming for a minimal, professional look: a
-# restrained slate/neutral palette, flat surfaces with hairline borders instead
-# of bright fills or shadows, and clear partitioning between regions. No external
-# assets; everything is scoped to this app's markup.
+# Foundational component layer. Product tokens are defined once in
+# ``_SHELL_CSS``; keeping the established named layers avoids breaking imports
+# and tests while preventing competing token definitions.
 _CUSTOM_CSS = """
 <style>
 
-:root {
-    --cpb-ink: #2e1065;         /* deep indigo-plum - primary text (no black) */
-    --cpb-muted: #6d5e9c;       /* muted violet - secondary text */
-    --cpb-faint: #a99fce;       /* soft lilac - tertiary */
-    --cpb-border: #e4def5;      /* pale lavender - hairline borders */
-    --cpb-surface: #ffffff;     /* clean card surface */
-    --cpb-subtle: #f3effd;      /* light lavender fill */
-    --cpb-canvas: #f7f5fc;      /* page background wash */
-    --cpb-accent: #7c3aed;      /* vivid violet - primary accent */
-    --cpb-accent-2: #4f46e5;    /* indigo - gradient partner */
-    --cpb-accent-soft: #ede9fe; /* violet-100 */
-    --cpb-coral: #f43f8e;       /* coral-pink - lively secondary */
-    --cpb-ok: #0ea5a4;          /* teal-cyan - collected */
-    --cpb-pending: #f97316;     /* warm orange - missing */
-    --cpb-radius: 14px;
-    --cpb-shadow: 0 10px 30px -18px rgba(79, 70, 229, 0.45);
-    --cpb-shadow-sm: 0 4px 14px -10px rgba(79, 70, 229, 0.5);
-}
 
 /* Global type: a clean, modern sans across the whole app. Icon glyphs are
    excluded: Streamlit draws icons with a ligature font (the text "arrow_right"
@@ -179,11 +165,11 @@ html, body, .stApp,
     font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 
-/* Tint the whole page with soft, professional gradients. */
+/* Tint the whole page with a restrained blue wash. */
 .stApp {
     background:
-        radial-gradient(1100px 520px at 12% -12%, #ece4fe 0%, rgba(236,228,254,0) 58%),
-        radial-gradient(900px 460px at 100% -6%, #fde4ef 0%, rgba(253,228,239,0) 52%),
+        radial-gradient(1100px 520px at 12% -12%, #e4f2fa 0%, rgba(228,242,250,0) 58%),
+        radial-gradient(900px 460px at 100% -6%, #e7f7fb 0%, rgba(231,247,251,0) 52%),
         var(--cpb-canvas);
     background-attachment: fixed;
 }
@@ -200,19 +186,18 @@ html, body, .stApp,
 * { scroll-behavior: smooth; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb {
-    background: #d9cffb; border-radius: 999px; border: 2px solid transparent;
+    background: #a9c8da; border-radius: 999px; border: 2px solid transparent;
     background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover { background: #c3b3f5; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: #7eacc4; background-clip: content-box; }
 
-/* Code block: a soft indigo surface rather than the default near-black, and
-   wrap long lines so the raw view never forces horizontal scrolling. */
+/* Code blocks use a cool-blue surface and wrap long lines. */
 .stCode, [data-testid="stCode"] pre {
-    background: #efeafe !important;
+    background: #eaf4fb !important;
     border: 1px solid var(--cpb-border) !important;
     border-radius: 12px !important;
 }
-.stCode code, [data-testid="stCode"] code { color: #3b2b73 !important; }
+.stCode code, [data-testid="stCode"] code { color: #0b5278 !important; }
 [data-testid="stCode"] pre, [data-testid="stCode"] code {
     white-space: pre-wrap !important;
     overflow-wrap: break-word !important;
@@ -246,7 +231,7 @@ html, body, .stApp,
     border-radius: 13px;
     font-size: 1.5rem;
     background: linear-gradient(135deg, var(--cpb-accent-2), var(--cpb-accent) 60%, var(--cpb-coral));
-    box-shadow: 0 8px 18px -8px rgba(124, 58, 237, 0.7);
+    box-shadow: 0 8px 18px -8px rgba(11, 99, 168, 0.7);
 }
 .cpb-header .cpb-head-text { display: flex; flex-direction: column; gap: 0.1rem; }
 .cpb-header h1 {
@@ -284,7 +269,7 @@ html, body, .stApp,
     border-radius: 18px;
     padding: 2rem 1.9rem;
     background:
-        linear-gradient(135deg, #f3effe 0%, #fdeef6 100%);
+        linear-gradient(135deg, #ffffff 0%, #eaf6fb 100%);
     color: var(--cpb-muted);
     box-shadow: var(--cpb-shadow);
 }
@@ -320,7 +305,7 @@ html, body, .stApp,
     font-size: 0.75rem; font-weight: 700;
     color: #fff;
     background: linear-gradient(135deg, var(--cpb-accent-2), var(--cpb-accent));
-    box-shadow: 0 4px 10px -4px rgba(124, 58, 237, 0.7);
+    box-shadow: 0 4px 10px -4px rgba(11, 99, 168, 0.7);
 }
 
 /* --- Example cards ---------------------------------------------------- */
@@ -339,7 +324,7 @@ html, body, .stApp,
 .cpb-example-card:hover {
     transform: translateY(-3px);
     border-color: var(--cpb-accent);
-    box-shadow: 0 16px 34px -18px rgba(124, 58, 237, 0.55);
+    box-shadow: 0 16px 34px -18px rgba(11, 99, 168, 0.55);
 }
 .cpb-example-title {
     font-weight: 700;
@@ -415,10 +400,10 @@ html, body, .stApp,
     font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     font-size: 0.96rem;
     line-height: 1.7;
-    color: #312360;                  /* soft dark indigo, not black */
+    color: #18324d;                  /* readable navy body text */
     overflow-wrap: break-word;       /* wrap long tokens, never h-scroll */
     word-break: break-word;
-    box-shadow: 0 10px 28px -20px rgba(79, 70, 229, 0.55);
+    box-shadow: 0 10px 28px -20px rgba(11, 69, 111, 0.55);
 }
 .cpb-prompt .cpb-prompt-h {
     font-weight: 700;
@@ -433,7 +418,7 @@ html, body, .stApp,
 .cpb-prompt .cpb-prompt-h:first-child { margin-top: 0; }
 .cpb-prompt .cpb-prompt-p {
     margin: 0 0 0.7rem 0;
-    color: #312360;
+    color: #18324d;
 }
 .cpb-prompt .cpb-prompt-list {
     margin: 0 0 0.8rem 0;
@@ -441,7 +426,7 @@ html, body, .stApp,
 }
 .cpb-prompt .cpb-prompt-list li {
     margin-bottom: 0.3rem;
-    color: #3b2b73;
+    color: #24445f;
 }
 .cpb-prompt .cpb-prompt-quote {
     margin: 0.4rem 0 0.9rem 0;
@@ -459,7 +444,7 @@ html, body, .stApp,
     border-radius: 6px;
     padding: 0.05rem 0.35rem;
     font-size: 0.86em;
-    color: #4f46e5;
+    color: #0b63a8;
     overflow-wrap: break-word;
 }
 
@@ -478,13 +463,13 @@ html, body, .stApp,
     margin-bottom: 0.55rem;
     box-shadow: var(--cpb-shadow-sm);
 }
-/* The user's own messages get a soft tinted background to set them apart. */
+/* The user's own messages get a soft cyan background to set them apart. */
 [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
-    background: linear-gradient(180deg, #f6f2ff 0%, #fdf2f8 100%);
-    border-color: #e7dcfb;
+    background: #edf7fc;
+    border-color: #b8dbea;
 }
 
-/* Secondary (default) buttons: lavender outline that lights up on hover. */
+/* Secondary (default) buttons use a blue outline and quiet hover fill. */
 .stButton > button {
     border-radius: 10px;
     border: 1px solid var(--cpb-border);
@@ -498,20 +483,20 @@ html, body, .stApp,
     color: var(--cpb-accent);
     background: var(--cpb-accent-soft);
 }
-/* Primary action buttons: vivid violet->coral gradient, the main call to action. */
+/* Primary action buttons use the blue/cyan product accent. */
 .stButton > button[kind="primary"] {
     background: linear-gradient(90deg, var(--cpb-accent-2), var(--cpb-accent) 55%, var(--cpb-coral));
     border: none;
     color: #fbfaff;
-    box-shadow: 0 10px 24px -12px rgba(124, 58, 237, 0.7);
+    box-shadow: 0 10px 24px -12px rgba(11, 99, 168, 0.7);
 }
 .stButton > button[kind="primary"]:hover {
     filter: brightness(1.06);
     color: #fbfaff;
-    box-shadow: 0 12px 28px -10px rgba(244, 63, 142, 0.6);
+    box-shadow: 0 12px 28px -10px rgba(7, 135, 173, 0.6);
 }
 /* Streamlit wraps button labels in <p>; the page-wide text colour would
-   otherwise paint them dark purple on the dark gradient. */
+   otherwise paint them navy on the primary fill. */
 .stButton > button[kind="primary"] p,
 .stButton > button[kind="primary"] span { color: #fbfaff !important; font-weight: 600; }
 .stButton > button:not([kind="primary"]) p { color: var(--cpb-accent-2) !important; font-weight: 600; }
@@ -525,9 +510,9 @@ html, body, .stApp,
     background: linear-gradient(90deg, var(--cpb-accent-2), var(--cpb-accent));
 }
 
-/* Sidebar: a soft lavender panel partitioned from the main column. */
+/* Sidebar: a quiet blue panel partitioned from the main column. */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #f1ebfe 0%, #f9f0f8 100%);
+    background: linear-gradient(180deg, #e8f2f8 0%, #f1f7fb 100%);
     border-right: 1px solid var(--cpb-border);
 }
 [data-testid="stSidebar"] .block-container { padding-top: 1.4rem; }
@@ -536,7 +521,7 @@ html, body, .stApp,
     width: 32px; height: 32px; display: grid; place-items: center;
     border-radius: 9px; font-size: 1.05rem;
     background: linear-gradient(135deg, var(--cpb-accent-2), var(--cpb-accent) 60%, var(--cpb-coral));
-    box-shadow: 0 6px 14px -6px rgba(124, 58, 237, 0.7);
+    box-shadow: 0 6px 14px -6px rgba(11, 99, 168, 0.7);
 }
 .cpb-sidebrand-name {
     font-size: 1.1rem; font-weight: 800; letter-spacing: -0.01em; color: var(--cpb-ink);
@@ -571,11 +556,11 @@ html, body, .stApp,
     border-radius: 16px !important;
     border: 1px solid var(--cpb-border) !important;
     background: var(--cpb-surface) !important;
-    box-shadow: 0 14px 34px -18px rgba(79, 70, 229, 0.55) !important;
+    box-shadow: 0 14px 34px -18px rgba(11, 69, 111, 0.55) !important;
 }
 [data-testid="stChatInput"]:focus-within {
     border-color: var(--cpb-accent) !important;
-    box-shadow: 0 0 0 3px var(--cpb-accent-soft), 0 14px 34px -18px rgba(79,70,229,.55) !important;
+    box-shadow: 0 0 0 3px var(--cpb-accent-soft), 0 14px 34px -18px rgba(11,69,111,.55) !important;
 }
 [data-testid="stChatInput"] textarea,
 [data-testid="stChatInput"] [data-baseweb="textarea"],
@@ -618,7 +603,7 @@ div[data-testid="stAlert"]:has([data-testid="stAlertContentInfo"]) {
 [data-testid="stSlider"] [role="slider"] {
     background: var(--cpb-accent) !important;
     border-color: var(--cpb-accent) !important;
-    box-shadow: 0 2px 8px -2px rgba(124,58,237,0.6) !important;
+    box-shadow: 0 2px 8px -2px rgba(7,135,173,0.6) !important;
 }
 [data-testid="stSlider"] [data-baseweb="slider"] div[style*="background"] {
     background: linear-gradient(90deg, var(--cpb-accent-2), var(--cpb-accent)) !important;
@@ -655,28 +640,10 @@ hr { border-color: var(--cpb-border) !important; opacity: 0.8; }
 </style>
 """
 
-# Final professional SaaS layer. These rules intentionally override the older
-# component skin above without changing behavior. They keep surfaces quiet,
-# spacing predictable, focus visible, and the layout usable at phone widths.
+# Layout-normalization layer retained as a named compatibility boundary. It
+# references the canonical tokens declared later instead of redefining them.
 _SAAS_CSS = """
 <style>
-:root {
-    --cpb-ink: #1e1b4b;
-    --cpb-muted: #5b5680;
-    --cpb-faint: #77728f;
-    --cpb-border: #ddd9eb;
-    --cpb-surface: #ffffff;
-    --cpb-subtle: #f5f3fa;
-    --cpb-canvas: #f8f7fb;
-    --cpb-accent: #6d28d9;
-    --cpb-accent-2: #4338ca;
-    --cpb-accent-soft: #ede9fe;
-    --cpb-ok: #087f75;
-    --cpb-pending: #b45309;
-    --cpb-radius: 12px;
-    --cpb-shadow: 0 1px 2px rgba(30,27,75,.06), 0 8px 24px rgba(30,27,75,.05);
-    --cpb-shadow-sm: 0 1px 2px rgba(30,27,75,.06);
-}
 .stApp {
     background: var(--cpb-canvas);
     color-scheme: light;
@@ -717,7 +684,7 @@ _SAAS_CSS = """
 .cpb-step {
     min-width: 0; padding: .55rem .65rem; border-radius: 9px; border: 1px solid transparent;
 }
-.cpb-step.active { background: var(--cpb-accent-soft); border-color: #c4b5fd; }
+.cpb-step.active { background: var(--cpb-accent-soft); border-color: #8cc9e2; }
 .cpb-step.completed { background: #ecfdf5; border-color: #a7f3d0; }
 .cpb-step.upcoming { background: var(--cpb-subtle); }
 .cpb-step-kicker { display: block; font-size: .68rem; font-weight: 700; color: var(--cpb-muted); }
@@ -739,13 +706,13 @@ _SAAS_CSS = """
 .cpb-quality-hint { font-size: .76rem; color: var(--cpb-muted); line-height: 1.4; }
 .cpb-prompt { max-width: none; border-left: 3px solid var(--cpb-accent-2); box-shadow: var(--cpb-shadow-sm); }
 [data-testid="stChatMessage"], [data-testid="stExpander"] details, [data-testid="stMetric"] { box-shadow: var(--cpb-shadow-sm); }
-[data-testid="stSidebar"] { background: #f4f2f8; }
+[data-testid="stSidebar"] { background: #eaf2f8; }
 .stButton > button, .stDownloadButton > button { min-height: 2.65rem; border-radius: 9px; }
 .stButton > button[kind="primary"] { background: var(--cpb-accent-2); box-shadow: none; }
 .stButton > button[kind="primary"]:hover { background: var(--cpb-accent); box-shadow: none; filter: none; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, [role="radio"]:focus-visible,
 [role="combobox"]:focus-visible, a:focus-visible {
-    outline: 3px solid #c4b5fd !important; outline-offset: 2px !important;
+    outline: 3px solid #59c7e3 !important; outline-offset: 2px !important;
 }
 /* Keep Streamlit's Material Symbols ligature font intact to avoid icon names
    appearing as text when the app-wide system font is applied. */
@@ -772,27 +739,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, [role="radio"
 </style>
 """
 
-# Final palette layer for the approved deep-navy / professional blue-cyan visual
-# system. It intentionally contains only visual overrides, leaving app behavior
-# in the render functions below.
+# Deep-navy palette application layer retained under its established name. The
+# canonical palette itself is declared once in ``_SHELL_CSS``.
 _NAVY_CSS = """
 <style>
-:root {
-    --cpb-ink: #0b1f3a;
-    --cpb-muted: #40566f;
-    --cpb-faint: #60758b;
-    --cpb-border: #cbd8e6;
-    --cpb-surface: #ffffff;
-    --cpb-subtle: #edf5fb;
-    --cpb-canvas: #f4f8fc;
-    --cpb-accent: #087ea4;
-    --cpb-accent-2: #145da0;
-    --cpb-accent-soft: #dff4fb;
-    --cpb-ok: #067a68;
-    --cpb-pending: #9a5b00;
-    --cpb-shadow: 0 1px 2px rgba(6, 32, 58, .08), 0 10px 28px rgba(20, 93, 160, .07);
-    --cpb-shadow-sm: 0 1px 3px rgba(6, 32, 58, .09);
-}
 html, body, .stApp { overflow-x: hidden; color-scheme: light; }
 ::-webkit-scrollbar-thumb { background: #a9c8da; background-clip: content-box; }
 ::-webkit-scrollbar-thumb:hover { background: #7eacc4; background-clip: content-box; }
@@ -912,6 +862,311 @@ _SHELL_CSS = """
 }
 @media (max-width: 430px) {
     .cpb-flow { grid-template-columns: 1fr; }
+}
+
+/* Canonical product design system. Earlier named layers remain for compatibility;
+   these tokens and component rules are the final source of visual truth. */
+:root {
+    /* Canvas and surface hierarchy. */
+    --cpb-canvas: #f4f8fc;
+    --cpb-surface: #ffffff;
+    --cpb-surface-elevated: #ffffff;
+    --cpb-surface-muted: #edf5fa;
+    /* Borders and readable type. */
+    --cpb-border: #bfd0de;
+    --cpb-border-strong: #8fadc3;
+    --cpb-text: #0a2540;
+    --cpb-muted: #49657f;
+    --cpb-faint: #536d84;
+    /* Product and semantic colors. */
+    --cpb-primary: #0b63ce;
+    --cpb-primary-hover: #084ea6;
+    --cpb-primary-soft: #e6f0fc;
+    --cpb-cyan: #087b9f;
+    --cpb-cyan-soft: #e3f5fb;
+    --cpb-success: #087f68;
+    --cpb-success-soft: #e7f7f1;
+    --cpb-warning: #8a5700;
+    --cpb-warning-soft: #fff5db;
+    --cpb-danger: #b42332;
+    --cpb-danger-soft: #feebee;
+    --cpb-focus: #007c9f;
+    /* Elevation, radii, and the 8px spacing scale. */
+    --cpb-shadow-xs: 0 1px 2px rgba(10, 37, 64, .08);
+    --cpb-shadow-sm: 0 1px 2px rgba(10, 37, 64, .07), 0 5px 14px rgba(10, 67, 105, .05);
+    --cpb-shadow-md: 0 2px 5px rgba(10, 37, 64, .07), 0 14px 28px rgba(10, 67, 105, .07);
+    --cpb-radius-sm: 8px;
+    --cpb-radius-md: 12px;
+    --cpb-radius-lg: 16px;
+    --cpb-space-1: .5rem;
+    --cpb-space-2: 1rem;
+    --cpb-space-3: 1.5rem;
+    --cpb-space-4: 2rem;
+    /* Compatibility aliases used by established component rules. */
+    --cpb-ink: var(--cpb-text);
+    --cpb-subtle: var(--cpb-surface-muted);
+    --cpb-accent: var(--cpb-cyan);
+    --cpb-accent-2: var(--cpb-primary);
+    --cpb-accent-soft: var(--cpb-cyan-soft);
+    --cpb-coral: var(--cpb-cyan);
+    --cpb-ok: var(--cpb-success);
+    --cpb-pending: var(--cpb-warning);
+    --cpb-radius: var(--cpb-radius-md);
+    --cpb-shadow: var(--cpb-shadow-md);
+}
+html { background: var(--cpb-canvas); }
+body, .stApp { color: var(--cpb-ink); line-height: 1.55; }
+.stApp {
+    background:
+        linear-gradient(180deg, #eaf4fb 0, rgba(234,244,251,.82) 10rem, rgba(244,248,252,0) 24rem),
+        var(--cpb-canvas);
+}
+.block-container { max-width: 1120px; padding: 1.35rem 2rem 11rem; }
+.stApp h1, .stApp h2, .stApp h3 { color: var(--cpb-ink); text-wrap: balance; }
+.stCaption, [data-testid="stCaptionContainer"] { color: var(--cpb-muted) !important; }
+hr { margin-block: 1.5rem !important; border-color: var(--cpb-border) !important; }
+
+/* Stable controls: 44px targets, clear hover/press/focus, no layout jumps. */
+.stButton > button, .stDownloadButton > button, button,
+[data-baseweb="select"] > div, [data-baseweb="input"] > div {
+    min-height: 2.75rem;
+}
+.stButton > button, .stDownloadButton > button {
+    border-radius: var(--cpb-radius-sm);
+    border-color: var(--cpb-border-strong);
+    box-shadow: none;
+    transition: background-color .14s ease, border-color .14s ease, color .14s ease, box-shadow .14s ease, transform .08s ease;
+}
+.stButton > button:hover, .stDownloadButton > button:hover {
+    background: var(--cpb-cyan-soft);
+    border-color: var(--cpb-cyan);
+    color: #07577a;
+    box-shadow: var(--cpb-shadow-xs);
+}
+.stButton > button:active, .stDownloadButton > button:active { transform: translateY(1px); box-shadow: none; }
+.stButton > button[kind="primary"], [data-testid="stBaseButton-primary"] {
+    background: var(--cpb-primary) !important;
+    border-color: var(--cpb-primary) !important;
+    color: #fff !important;
+}
+.stButton > button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover {
+    background: var(--cpb-primary-hover) !important;
+    border-color: var(--cpb-primary-hover) !important;
+}
+button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible,
+[role="radio"]:focus-visible, [role="tab"]:focus-visible, [role="combobox"]:focus-visible,
+a:focus-visible {
+    outline: 3px solid var(--cpb-focus) !important;
+    outline-offset: 2px !important;
+}
+[data-testid="stExpander"] details { border-color: var(--cpb-border) !important; border-radius: var(--cpb-radius-md) !important; }
+[data-testid="stExpander"] summary { min-height: 2.75rem; align-items: center; }
+[data-testid="stCode"] button { min-width: 2.75rem; min-height: 2.75rem; }
+[data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea, [data-baseweb="select"] > div {
+    border-color: var(--cpb-border) !important;
+    border-radius: var(--cpb-radius-sm) !important;
+}
+[data-testid="stTextInput"] input:hover, [data-testid="stTextArea"] textarea:hover, [data-baseweb="select"] > div:hover {
+    border-color: var(--cpb-border-strong) !important;
+}
+
+/* App shell and navigation. */
+[data-testid="stSidebar"] { background: #e9f2f8; border-right: 1px solid var(--cpb-border); }
+[data-testid="stSidebar"] .block-container { padding: 1.35rem 1rem 2rem; }
+.cpb-sidebrand { margin-bottom: .2rem; }
+.cpb-sidebrand-logo { border-radius: 10px; box-shadow: var(--cpb-shadow-xs); }
+[data-testid="stSidebar"] [data-testid="stRadio"] > div { gap: .25rem; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label {
+    position: relative; min-height: 2.75rem; padding: .45rem .65rem; border: 1px solid transparent;
+    border-radius: var(--cpb-radius-sm); transition: background-color .14s ease, border-color .14s ease;
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:hover { background: #dbeaf4; border-color: #bdd2e0; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {
+    background: #d8ebf8; border-color: #82b9d5; box-shadow: inset 3px 0 0 var(--cpb-primary);
+}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) p { color: #073c67; }
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:focus-visible) {
+    outline: 3px solid var(--cpb-focus); outline-offset: 2px;
+}
+.cpb-session-utility {
+    display: flex; align-items: center; gap: .65rem; margin: .75rem 0 1rem; padding: .65rem .7rem;
+    border: 1px solid #b8cedd; border-radius: var(--cpb-radius-sm); background: rgba(255,255,255,.64);
+}
+.cpb-session-dot { width: .55rem; height: .55rem; flex: none; border-radius: 50%; background: var(--cpb-success); box-shadow: 0 0 0 3px var(--cpb-success-soft); }
+.cpb-session-utility b, .cpb-session-utility small { display: block; }
+.cpb-session-utility b { color: #173b57; font-size: .76rem; }
+.cpb-session-utility small { color: var(--cpb-muted); font-size: .7rem; }
+
+/* Page hierarchy. */
+.cpb-page-context { margin: 0 0 1.15rem; }
+.cpb-breadcrumb { margin-bottom: .4rem; font-size: .76rem; color: #567088; }
+.cpb-page-heading { color: #082f56; font-size: clamp(1.65rem, 3vw, 2.25rem); letter-spacing: -.035em; }
+.cpb-page-subheading { margin-top: .4rem; font-size: .94rem; color: #3f5c75; }
+.cpb-section-title { margin-top: 2rem; padding-top: .25rem; font-size: 1.22rem; }
+.cpb-section-copy { max-width: 78ch; margin-bottom: .9rem; line-height: 1.55; }
+
+/* Home. */
+.cpb-hero {
+    position: relative; overflow: hidden; padding: clamp(1.5rem, 4vw, 2.75rem);
+    border-color: #a9cfe3; border-radius: var(--cpb-radius-lg);
+    background: linear-gradient(132deg, #fff 0 58%, #e5f5fb 100%); box-shadow: var(--cpb-shadow-md);
+}
+.cpb-hero::after {
+    content: ""; position: absolute; right: -4rem; bottom: -6rem; width: 15rem; height: 15rem;
+    border: 1.5rem solid rgba(7,135,173,.07); border-radius: 50%; pointer-events: none;
+}
+.cpb-hero-badge, .cpb-status-pill, .cpb-empty-badge {
+    display: inline-flex; align-items: center; border: 1px solid #91cade; border-radius: 999px;
+    background: #f7fdff; color: #07577a; font-size: .69rem; font-weight: 800; letter-spacing: .055em;
+    padding: .25rem .6rem;
+}
+.cpb-hero h2 { position: relative; max-width: 18ch; color: #062f56; }
+.cpb-hero p { position: relative; max-width: 60ch; }
+.cpb-hero-meta { position: relative; display: flex; flex-wrap: wrap; gap: .45rem .75rem; margin-top: 1rem; }
+.cpb-hero-meta span { padding: .25rem .55rem; border-radius: 999px; background: rgba(255,255,255,.75); color: #28526d; font-size: .74rem; font-weight: 700; }
+.cpb-flow { gap: .75rem; }
+.cpb-flow-step { position: relative; min-height: 7.2rem; padding: 1rem; border-color: var(--cpb-border); box-shadow: var(--cpb-shadow-xs); }
+.cpb-flow-step b { color: #07577a; }
+.cpb-card, .cpb-resume { border-color: var(--cpb-border); box-shadow: var(--cpb-shadow-sm); }
+.cpb-card { min-height: 7.5rem; transition: border-color .14s ease, box-shadow .14s ease, transform .14s ease; }
+.cpb-card:hover { border-color: #8ebbd1; box-shadow: var(--cpb-shadow-md); transform: translateY(-2px); }
+.cpb-privacy-note { margin-top: 1rem; border-left-color: var(--cpb-cyan); background: var(--cpb-cyan-soft); }
+
+/* Builder actions, progress and conversation. */
+.cpb-action-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin: .2rem 0 .5rem; }
+.cpb-action-heading span { color: #315b79; font-size: .73rem; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+.cpb-action-heading small { color: var(--cpb-faint); font-size: .72rem; }
+div[data-testid="stHorizontalBlock"]:has(.st-key-builder_home) {
+    gap: .55rem; padding: .6rem; margin-bottom: .85rem; border: 1px solid var(--cpb-border);
+    border-radius: var(--cpb-radius-md); background: rgba(255,255,255,.72); box-shadow: var(--cpb-shadow-xs);
+}
+.st-key-builder_new_prompt button, .st-key-new_session_button button { color: var(--cpb-danger) !important; border-color: #dea7ad !important; }
+.st-key-builder_new_prompt button p, .st-key-new_session_button button p { color: var(--cpb-danger) !important; }
+.st-key-builder_new_prompt button:hover, .st-key-new_session_button button:hover { background: var(--cpb-danger-soft) !important; border-color: var(--cpb-danger) !important; }
+.cpb-pending-hint { display: flex; align-items: center; gap: .7rem; margin: -.25rem 0 .5rem; padding: .6rem .75rem; border-radius: var(--cpb-radius-sm); background: var(--cpb-warning-soft); border: 1px solid #e6c87e; }
+.cpb-pending-hint b { flex: none; color: #754900; font-size: .75rem; }
+.cpb-pending-hint span { color: #6b5733; font-size: .75rem; }
+.st-key-builder_skip_question button { color: #754900 !important; border-color: #d8b860 !important; background: #fffbef !important; }
+.cpb-stepper { position: relative; gap: 1rem; padding: .65rem; border-color: var(--cpb-border); box-shadow: var(--cpb-shadow-xs); }
+.cpb-step { position: relative; min-height: 4.35rem; padding: .65rem .75rem; border-color: transparent; }
+.cpb-step:not(:last-child)::after { content: ""; position: absolute; z-index: 2; top: 50%; right: -1rem; width: 1rem; height: 2px; background: var(--cpb-border-strong); }
+.cpb-step.active { background: #e4f3fb; border-color: #75bddb; box-shadow: inset 0 3px 0 var(--cpb-cyan); }
+.cpb-step.completed { background: var(--cpb-success-soft); border-color: #8dd2c0; }
+.cpb-step.upcoming { background: #f0f4f8; border-color: #e1e9ef; }
+.cpb-step-kicker { margin-bottom: .15rem; color: #486a82; }
+.cpb-step-state { margin-top: .1rem; }
+.cpb-empty { padding: 1.5rem; border-color: #a9cfe3; border-radius: var(--cpb-radius-lg); background: linear-gradient(135deg, #fff, #eef8fc); }
+.cpb-empty-badge { margin-bottom: .7rem; }
+[data-testid="stChatMessage"] { padding: .75rem .9rem; margin-bottom: .75rem; border-color: var(--cpb-border); box-shadow: var(--cpb-shadow-sm); }
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) { margin-left: min(6%, 3rem); background: #eaf5fb; border-color: #a9cede; }
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) { margin-right: min(6%, 3rem); }
+.cpb-message-label { display: block; margin-bottom: .25rem; color: #42667f; font-size: .68rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+[data-testid="stChatInput"] { border-color: #83b5d0 !important; border-radius: var(--cpb-radius-md) !important; box-shadow: 0 8px 26px rgba(10, 67, 105, .16) !important; }
+[data-testid="stChatInput"] button { min-width: 2.75rem; min-height: 2.75rem; background: var(--cpb-primary) !important; }
+
+/* Template discovery and preview. */
+.cpb-filter-intro { display: flex; align-items: baseline; gap: .65rem; margin: .2rem 0 .55rem; padding-bottom: .5rem; border-bottom: 1px solid var(--cpb-border); }
+.cpb-filter-intro b { color: #173f5e; font-size: .84rem; }
+.cpb-filter-intro span { color: var(--cpb-muted); font-size: .76rem; }
+div[data-testid="stHorizontalBlock"]:has(.st-key-template_clear_filters) { align-items: end; padding: .75rem; border: 1px solid var(--cpb-border); border-radius: var(--cpb-radius-md); background: rgba(255,255,255,.68); }
+.cpb-template-card { min-height: 10.4rem; margin-top: .45rem; padding: 1.05rem; border-color: var(--cpb-border); box-shadow: var(--cpb-shadow-sm); transition: border-color .14s ease, box-shadow .14s ease, transform .14s ease; }
+.cpb-template-card:hover { transform: translateY(-2px); border-color: #77b5d1; box-shadow: var(--cpb-shadow-md); }
+.cpb-template-category { margin-bottom: .75rem; color: #07577a; background: var(--cpb-cyan-soft); border: 1px solid #b6deeb; }
+.cpb-template-title { font-size: 1rem; }
+.cpb-template-description { max-width: 54ch; line-height: 1.5; }
+.cpb-preview { padding: 1.1rem; border-left-color: var(--cpb-cyan); box-shadow: var(--cpb-shadow-sm); }
+.cpb-preview-excerpt { max-height: 18rem; padding: 1rem; border: 1px solid #d4e3ed; background: #f0f7fb; line-height: 1.6; }
+.cpb-preview-excerpt > .cpb-prompt {
+    max-width: none; margin: 0; padding: 0; border: 0; border-radius: 0;
+    background: transparent; box-shadow: none; font-size: .82rem; line-height: 1.55;
+}
+.cpb-preview-excerpt .cpb-prompt-h:first-child { margin-top: 0; }
+.cpb-template-empty { padding: 1.25rem; border-color: #8fb6cc; background: #f7fbfd; text-align: center; }
+
+/* Review workspace. */
+.cpb-demo-note { padding: .25rem .6rem; border-color: #91cade; border-radius: 999px; color: #07577a; }
+.cpb-panel-title { font-size: 1.15rem; font-weight: 800; color: #082f56; }
+.cpb-quality { min-height: 3.3rem; border-color: #9fbed1; background: #f7fbfd; }
+.cpb-quality-score { color: #07577a; }
+.cpb-prompt { max-width: 82ch; margin-inline: auto; padding: 1.5rem clamp(1rem, 3vw, 2rem); border: 1px solid var(--cpb-border); border-left: 4px solid var(--cpb-cyan); border-radius: var(--cpb-radius-md); background: var(--cpb-surface-elevated); box-shadow: var(--cpb-shadow-sm); }
+.cpb-prompt .cpb-prompt-h { margin-top: 1.35rem; color: #076489; }
+.cpb-prompt .cpb-prompt-p, .cpb-prompt .cpb-prompt-list li { color: #183a55; }
+.cpb-review-toolbar, .cpb-export-heading { display: flex; align-items: baseline; gap: .65rem; margin: 1rem 0 .45rem; }
+.cpb-review-toolbar b, .cpb-export-heading b { color: #173f5e; font-size: .82rem; }
+.cpb-review-toolbar span, .cpb-export-heading span { color: var(--cpb-muted); font-size: .75rem; }
+div[data-testid="stHorizontalBlock"]:has(.st-key-copy_button) { padding: .6rem; border: 1px solid var(--cpb-border); border-radius: var(--cpb-radius-md); background: #f7fbfd; }
+.st-key-cancel_prompt_edit button { color: var(--cpb-danger) !important; border-color: #dea7ad !important; }
+.st-key-cancel_prompt_edit button p { color: var(--cpb-danger) !important; }
+.cpb-quality-row { padding-block: .7rem; }
+.cpb-quality-mark.pass { color: #075e50; background: var(--cpb-success-soft); }
+.cpb-quality-mark.warn { color: #754900; background: var(--cpb-warning-soft); }
+
+/* Guide. */
+.cpb-guide-index { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: .25rem 0 1.1rem; padding: .75rem; border: 1px solid var(--cpb-border); border-radius: var(--cpb-radius-md); background: rgba(255,255,255,.72); }
+.cpb-guide-index span { color: #315b79; font-size: .72rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+.cpb-guide-index a { min-height: 2.75rem; display: inline-flex; align-items: center; padding: .35rem .65rem; border: 1px solid #a9c7d9; border-radius: 999px; color: #07577a; font-size: .76rem; font-weight: 700; text-decoration: none; transition: background-color .14s ease, border-color .14s ease, transform .08s ease; }
+.cpb-guide-index a:hover { background: var(--cpb-cyan-soft); border-color: var(--cpb-cyan); }
+.cpb-guide-index a:active { transform: translateY(1px); }
+.cpb-guide-anchor { scroll-margin-top: 1rem; }
+.cpb-guide-group { margin: 1.35rem 0 .55rem !important; color: #315b79 !important; font-size: .76rem !important; font-weight: 800 !important; letter-spacing: .09em !important; text-transform: uppercase; }
+
+@media (prefers-reduced-motion: reduce) {
+    .cpb-card:hover, .cpb-template-card:hover { transform: none; }
+    .stButton > button:active, .stDownloadButton > button:active { transform: none; }
+}
+@media (max-width: 700px) {
+    [data-testid="stHeader"] { background: #eaf4fb !important; }
+    [data-testid="stMain"] .block-container { padding: 3.1rem .8rem 11.5rem !important; }
+    .cpb-page-context { margin-bottom: .85rem; }
+    .cpb-breadcrumb { font-size: .72rem; }
+    .cpb-page-heading { font-size: 1.45rem; }
+    .cpb-page-subheading { margin-top: .25rem; font-size: .84rem; line-height: 1.45; }
+    .cpb-hero { padding: .9rem; }
+    .cpb-hero::after { width: 8rem; height: 8rem; right: -4rem; bottom: -4rem; border-width: .8rem; }
+    .cpb-hero h2 { max-width: 19ch; margin: .55rem 0 .4rem; font-size: 1.35rem; line-height: 1.08; }
+    .cpb-hero p { font-size: .85rem; line-height: 1.45; }
+    .cpb-hero-meta { gap: .25rem; margin-top: .7rem; }
+    .cpb-hero-meta span { padding: .18rem .4rem; font-size: .66rem; }
+    .cpb-flow { grid-template-columns: 1fr 1fr; }
+    .cpb-flow-step { min-height: 6.6rem; }
+    .cpb-action-heading { display: block; }
+    .cpb-action-heading small { display: block; margin-top: .15rem; }
+    div[data-testid="stHorizontalBlock"]:has(.st-key-builder_home) {
+        display: grid !important; grid-template-columns: 1fr 1fr; gap: .45rem;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.st-key-builder_home) > [data-testid="column"] {
+        min-width: 0 !important; width: auto !important; flex: none !important;
+    }
+    .cpb-pending-hint { display: block; }
+    .cpb-pending-hint span { display: block; margin-top: .2rem; }
+    .cpb-stepper { grid-template-columns: 1fr 1fr; gap: .4rem; }
+    .cpb-step { min-height: 4.15rem; }
+    .cpb-step::after { display: none; }
+    .cpb-empty { padding: 1.1rem; }
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]),
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) { margin-inline: 0; }
+    .cpb-filter-intro, .cpb-review-toolbar, .cpb-export-heading { display: block; }
+    .cpb-filter-intro span, .cpb-review-toolbar span, .cpb-export-heading span { display: block; margin-top: .15rem; }
+    div[data-testid="stHorizontalBlock"]:has(.st-key-template_clear_filters) { padding: .65rem; }
+    .cpb-template-card { min-height: 0; }
+    .cpb-preview-excerpt { max-height: 14rem; }
+    .cpb-prompt { padding: 1rem; font-size: .91rem; line-height: 1.65; }
+    div[data-testid="stHorizontalBlock"]:has(.st-key-copy_button) {
+        display: grid !important; grid-template-columns: 1fr 1fr;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.st-key-copy_button) > [data-testid="column"] {
+        min-width: 0 !important; width: auto !important; flex: none !important;
+    }
+    .cpb-guide-index { align-items: stretch; }
+    .cpb-guide-index span { flex: 0 0 100%; }
+    .cpb-guide-index a { flex: 1 1 calc(50% - .5rem); justify-content: center; text-align: center; }
+}
+@media (max-width: 430px) {
+    .cpb-flow { grid-template-columns: 1fr 1fr; }
+    .cpb-flow-step { min-height: 6rem; padding: .75rem; }
+    .cpb-flow-step span { font-size: .73rem; }
+    .cpb-hero-meta span { font-size: .68rem; }
+    .cpb-guide-index a { flex-basis: 100%; }
 }
 </style>
 """
@@ -1396,8 +1651,9 @@ def _render_template_preview(example: dict) -> None:
         '</div>',
         unsafe_allow_html=True,
     )
+    preview_html = _render_prompt_html(example["prompt"])
     st.markdown(
-        f'<div class="cpb-preview-excerpt">{html.escape(example["prompt"])}</div>',
+        f'<div class="cpb-preview-excerpt" aria-label="Template prompt preview">{preview_html}</div>',
         unsafe_allow_html=True,
     )
     preview_use, preview_close = st.columns([1, 1])
@@ -1429,6 +1685,11 @@ def _render_template_gallery(*, featured: bool = False) -> None:
     if featured:
         matches = DEMO_EXAMPLES[:3]
     else:
+        st.markdown(
+            '<div class="cpb-filter-intro"><b>Find a starting point</b>'
+            '<span>Search by outcome or narrow the library by category.</span></div>',
+            unsafe_allow_html=True,
+        )
         filter_row = st.columns([3, 2, 1])
         with filter_row[0]:
             query = st.text_input(
@@ -1519,6 +1780,7 @@ def _render_empty_state() -> None:
     st.markdown(
         """
         <div class="cpb-empty">
+            <span class="cpb-empty-badge">YOUR FIRST STEP</span>
             <h3>Start with one clear outcome</h3>
             <p>Use the chat input below to describe what you want. The builder will
             identify useful details, ask focused follow-ups, and create a prompt you can edit and export.</p>
@@ -1539,7 +1801,11 @@ def _render_empty_state() -> None:
 
 def _render_builder_action_bar(session: Optional[Session]) -> None:
     """Render explicit Builder navigation and state-changing actions."""
-    st.markdown('<p class="cpb-eyebrow">Builder actions</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="cpb-action-heading"><span>Workspace actions</span>'
+        '<small>Session-safe navigation and generation controls</small></div>',
+        unsafe_allow_html=True,
+    )
     actions = st.columns(4)
     with actions[0]:
         if st.button("Home", key="builder_home", width="stretch", help="Return home without clearing this session."):
@@ -1573,6 +1839,11 @@ def _render_builder_action_bar(session: Optional[Session]) -> None:
 
     pending = st.session_state.get(PENDING_QUESTION_KEY)
     if session is not None and pending and session.generated_prompt is None:
+        st.markdown(
+            '<div class="cpb-pending-hint"><b>Question controls</b>'
+            '<span>Answer in the message box, skip this question, or generate from the details already captured.</span></div>',
+            unsafe_allow_html=True,
+        )
         if st.button(
             "Skip this question",
             key="builder_skip_question",
@@ -1595,6 +1866,9 @@ def _render_home(session: Optional[Session]) -> None:
           <p>Describe the outcome in your own words. The Builder plans a focused interview,
           captures relevant constraints, then creates a detailed prompt you can edit, revise,
           copy, or export.</p>
+          <div class="cpb-hero-meta" aria-label="Workspace benefits">
+            <span>✓ Adaptive questions</span><span>✓ Local editing</span><span>✓ In-memory sessions</span>
+          </div>
         </section>
         """,
         unsafe_allow_html=True,
@@ -1663,7 +1937,17 @@ def _render_home(session: Optional[Session]) -> None:
 
 
 def _render_guide() -> None:
-    """Render concise guidance in scannable, keyboard-accessible sections."""
+    """Render concise guidance in grouped, keyboard-accessible sections."""
+    st.markdown(
+        '<nav class="cpb-guide-index" aria-label="Guide sections">'
+        '<span>Jump to</span>'
+        '<a href="#guide-design">Prompt design</a>'
+        '<a href="#guide-workspace">Using the workspace</a>'
+        '<a href="#guide-recovery">Privacy & recovery</a>'
+        '</nav>',
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div id="guide-design" class="cpb-guide-anchor"></div><h2 class="cpb-guide-group">Prompt design</h2>', unsafe_allow_html=True)
     with st.expander("What makes a prompt strong", expanded=True):
         st.markdown(
             "A strong prompt names the **objective**, relevant **context and inputs**, intended **audience**, "
@@ -1683,6 +1967,8 @@ def _render_guide() -> None:
             "on model output. Temperature and top-p affect sampling, while penalties affect repetition. "
             "Changing those controls does not automatically make the prompt itself more detailed."
         )
+
+    st.markdown('<div id="guide-workspace" class="cpb-guide-anchor"></div><h2 class="cpb-guide-group">Using the workspace</h2>', unsafe_allow_html=True)
     with st.expander("Demo templates versus live AI generation"):
         st.markdown(
             "Templates are pre-written demonstrations. Previewing or using one makes **no model call**. "
@@ -1695,6 +1981,8 @@ def _render_guide() -> None:
             "The raw prompt code block provides the browser's copy control. The server cannot verify whether a browser "
             "clipboard write succeeded. Exports are available as Markdown, plain text, and JSON."
         )
+
+    st.markdown('<div id="guide-recovery" class="cpb-guide-anchor"></div><h2 class="cpb-guide-group">Privacy & recovery</h2>', unsafe_allow_html=True)
     with st.expander("Privacy and telemetry"):
         st.markdown(
             "Sessions and metrics are held in memory only and disappear when the process restarts. There is no account "
@@ -1714,6 +2002,11 @@ def _render_history(session: Session) -> None:
     for message in order_messages_for_render(session.messages):
         treatment = treatment_for_message(message)
         with st.chat_message(treatment.role, avatar=treatment.avatar):
+            speaker = "You" if message.sender == "user" else "Prompt Builder"
+            st.markdown(
+                f'<span class="cpb-message-label">{speaker}</span>',
+                unsafe_allow_html=True,
+            )
             st.markdown(message.text)
 
 
@@ -1912,7 +2205,7 @@ def _render_prompt_panel(session: Session) -> None:
     st.divider()
     if st.session_state.get(DEMO_MODE_KEY):
         st.markdown(
-            '<span class="cpb-demo-note">TEMPLATE PREVIEW · NO AI CALL</span>',
+            '<span class="cpb-demo-note">TEMPLATE SOURCE · NO AI CALL</span>',
             unsafe_allow_html=True,
         )
 
@@ -1964,15 +2257,36 @@ def _render_prompt_panel(session: Session) -> None:
     else:
         st.markdown(_render_prompt_html(prompt.text), unsafe_allow_html=True)
 
-        action_copy, action_edit, action_md, action_txt, action_json = st.columns([1.15, 1.15, 1, 1, 1])
+        st.markdown(
+            '<div class="cpb-review-toolbar"><b>Prompt actions</b>'
+            '<span>Edit locally without an AI call, or open the browser copy view.</span></div>',
+            unsafe_allow_html=True,
+        )
+        action_copy, action_edit = st.columns(2)
         with action_copy:
-            if st.button("Copy prompt", key="copy_button", width="stretch", type="primary"):
+            if st.button(
+                "Copy prompt",
+                key="copy_button",
+                width="stretch",
+                type="primary",
+                help="Opens the raw prompt and its browser-provided copy control.",
+            ):
                 st.session_state[COPY_CONFIRMED_KEY] = True
         with action_edit:
             if st.button("Edit locally", key="edit_prompt_button", width="stretch"):
                 st.session_state[EDIT_MODE_KEY] = True
                 st.session_state[EDIT_DRAFT_KEY] = prompt.text
                 st.rerun()
+
+        copy_requested = bool(st.session_state.get(COPY_CONFIRMED_KEY))
+        if copy_requested:
+            st.info(
+                "The browser copy view is open below. Use its copy icon; the server cannot verify clipboard success."
+            )
+
+        with st.expander("Raw prompt and browser copy", expanded=copy_requested):
+            st.caption("Use the copy icon in the code block. Clipboard access happens in your browser; this server cannot verify success.")
+            st.code(prompt.text, language="markdown")
 
         exports = frontend.build_prompt_exports(
             prompt,
@@ -1983,7 +2297,12 @@ def _render_prompt_panel(session: Session) -> None:
                 "quality_dimensions_passed": quality.passed,
             },
         )
-        for column, export in zip((action_md, action_txt, action_json), exports):
+        st.markdown(
+            '<div class="cpb-export-heading"><b>Export</b><span>Download a portable copy of this prompt.</span></div>',
+            unsafe_allow_html=True,
+        )
+        export_columns = st.columns(3)
+        for column, export in zip(export_columns, exports):
             with column:
                 st.download_button(
                     f"Export {export.label}",
@@ -1994,15 +2313,8 @@ def _render_prompt_panel(session: Session) -> None:
                     width="stretch",
                 )
 
-        if st.session_state.get(COPY_CONFIRMED_KEY):
-            st.success(
-                "Copy control is ready below. Use the browser copy icon; this server cannot verify whether the text was copied successfully."
-            )
+        if copy_requested:
             st.session_state[COPY_CONFIRMED_KEY] = False
-
-        with st.expander("Raw prompt and browser copy", expanded=False):
-            st.caption("Use the copy icon in the code block. Clipboard access happens in your browser; this server cannot verify success.")
-            st.code(prompt.text, language="markdown")
 
     _render_quality_breakdown(quality)
 
@@ -2024,7 +2336,7 @@ def _render_prompt_panel(session: Session) -> None:
                     key="revision_input",
                     placeholder="Describe the change you want...",
                 )
-                submitted = st.form_submit_button("Revise", width="stretch")
+                submitted = st.form_submit_button("Revise", type="primary", width="stretch")
             if submitted:
                 result = validation.validate_revision(revision_text)
                 if not result.ok:
@@ -2257,6 +2569,7 @@ def _render_sidebar(session: Optional[Session]) -> None:
             unsafe_allow_html=True,
         )
         st.caption("Guided prompt design, review, and operational insight.")
+        st.caption(provider_status_label())
 
         page_keys = [page.key for page in navigation.PAGES]
         # Synchronize the visible control before it is instantiated. Buttons
@@ -2275,6 +2588,19 @@ def _render_sidebar(session: Optional[Session]) -> None:
         )
 
         current_page = navigation.resolve_page(st.session_state.get(ROUTE_KEY))
+        resume = navigation.resume_state(session)
+        utility_state = (
+            f"{resume.current_step} · {'prompt ready' if resume.has_prompt else 'in progress'}"
+            if resume.available
+            else "No active prompt"
+        )
+        st.markdown(
+            '<div class="cpb-session-utility" aria-label="In-memory session status">'
+            '<span class="cpb-session-dot" aria-hidden="true"></span>'
+            '<div><b>In-memory session</b>'
+            f'<small>{utility_state}</small></div></div>',
+            unsafe_allow_html=True,
+        )
         if current_page.key != BUILDER_VIEW:
             if st.button(
                 "New prompt",
@@ -2285,12 +2611,6 @@ def _render_sidebar(session: Optional[Session]) -> None:
             ):
                 _start_new_prompt()
                 st.rerun()
-            resume = navigation.resume_state(session)
-            if resume.available:
-                st.caption(
-                    f"Current session: {resume.current_step} · "
-                    + ("prompt ready" if resume.has_prompt else f"{resume.captured_details} details")
-                )
             if current_page.key == HOME_VIEW:
                 st.divider()
                 _render_prompt_depth(session)

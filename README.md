@@ -54,31 +54,55 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Configuration
+## LLM provider configuration
 
-The app talks to a hosted, OpenAI-compatible language model API. Supply your API key
-through the `OPENAI_API_KEY` environment variable before running the app:
+The app supports OpenAI and Groq through the OpenAI-compatible Chat Completions
+API. Configuration values are read from the OS environment first and then from
+the same name in Streamlit Secrets. Provider-neutral `LLM_*` values take
+precedence over provider-specific compatibility aliases.
 
-**macOS / Linux**
+Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` for local
+TOML configuration, or paste one of these blocks into the deployed app's
+**Settings → Secrets** panel. The real local secrets file is ignored by Git.
 
-```bash
-export OPENAI_API_KEY="your-api-key-here"
+**OpenAI**
+
+```toml
+LLM_PROVIDER = "openai"
+OPENAI_API_KEY = "..."
+LLM_MODEL = "gpt-4o-mini"
 ```
 
-**Windows (PowerShell)**
+**Groq**
 
-```powershell
-$env:OPENAI_API_KEY = "your-api-key-here"
+```toml
+LLM_PROVIDER = "groq"
+GROQ_API_KEY = "..."
+LLM_MODEL = "openai/gpt-oss-120b"
+# LLM_BASE_URL is optional because the Groq default is automatic
 ```
 
-The app reads the key from the environment first and then from Streamlit secrets,
-so nothing sensitive needs to be stored in the code or committed to the repository.
-For local TOML-based configuration, copy `.streamlit/secrets.toml.example` to
-`.streamlit/secrets.toml`; the real file is ignored by Git.
+You may use provider-neutral `LLM_API_KEY` instead of `OPENAI_API_KEY` or
+`GROQ_API_KEY`. `LLM_BASE_URL` can override the selected provider endpoint.
+Existing OpenAI configuration remains compatible through `OPENAI_API_KEY`,
+`OPENAI_BASE_URL`, and `OPENAI_MODEL`. Groq also accepts `GROQ_BASE_URL` and
+`GROQ_MODEL` aliases. Groq receives the temperature, max-token, top-p, and stop
+settings used by the app. The client omits frequency and presence penalties for
+Groq because its OpenAI-compatible endpoint does not currently support them.
+
+Never commit API keys, paste them into chat, or place them in source code. The
+sidebar shows only the active provider and model, never the key.
+
+### Private-app access is separate
+
+Streamlit private-app authentication controls who can open the deployed app.
+LLM API configuration controls which provider the server calls and which
+server-side account pays for usage. Configuring one does not configure the
+other. Keep app sharing restricted separately from adding LLM secrets.
 
 ## Running the app
 
-With the virtual environment active and `OPENAI_API_KEY` set, start the app:
+With the virtual environment active and an LLM API key configured, start the app:
 
 ```bash
 streamlit run app.py
@@ -93,13 +117,12 @@ it.
 1. In the Community Cloud workspace, choose **Create app** and select repository
    `lakshmiGanesh009/Conversational_prompt_builder`, branch `main`, and main file
    `app.py`.
-2. Open **Advanced settings**, select Python **3.11**, leave Secrets empty, and
-   deploy. Community Cloud installs the root `requirements.txt` and reads the
-   checked-in `.streamlit/config.toml`.
+2. Open **Advanced settings**, select Python **3.11**, add one of the LLM
+   configuration blocks above to **Secrets**, and deploy. Community Cloud installs
+   the root `requirements.txt` and reads the checked-in `.streamlit/config.toml`.
 3. In the deployed app's **Settings → Sharing**, set **Who can view this app** to
-   **Only specific people can view this app** and save. Then open **Settings →
-   Secrets** and paste the key shown in `.streamlit/secrets.toml.example`; add
-   `OPENAI_BASE_URL` only for a compatible non-default endpoint.
+   **Only specific people can view this app** and save. Sharing authentication is
+   separate from the LLM provider values in **Settings → Secrets**.
 4. Set a provider-side spend limit. The app uses the owner's server-side API key
    and does not include per-user authentication, rate limiting, or quotas. Do not
    make the app public unless that usage and cost risk is acceptable. Never commit

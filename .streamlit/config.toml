@@ -2,10 +2,10 @@
 # coherent light theme; the component CSS uses the same navy/blue/cyan tokens.
 [theme]
 base = "light"
-primaryColor = "#145DA0"
+primaryColor = "#0B63CE"
 backgroundColor = "#F4F8FC"
-secondaryBackgroundColor = "#EAF2F8"
-textColor = "#0B1F3A"
+secondaryBackgroundColor = "#E9F2F8"
+textColor = "#0A2540"
 
 [client]
 toolbarMode = "minimal"

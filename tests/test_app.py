@@ -292,23 +292,13 @@ def _session_with_prompt_cleared() -> Session:
     )
 
 
-# --- 5.6 / 5.7: copy success confirmation (and copy-failure note) ------------
-def test_copy_button_confirms_on_success() -> None:
-    """Req 5.6: clicking Copy surfaces a success confirmation.
+# --- 5.5 / 5.7: accurate browser copy guidance -------------------------------
+def test_copy_button_opens_copy_view_without_claiming_clipboard_success() -> None:
+    """Copy opens the browser control and never fabricates clipboard success.
 
-    With a prompt shown, clicking the server-side "Copy prompt" button sets the
-    one-shot confirmation flag, which renders an ``st.success`` message on the
-    following run.
-
-    Req 5.7 (copy failure error): ``app.py`` performs the actual clipboard copy
-    via ``st.code``'s built-in, client-side copy icon. A clipboard write failing
-    is a browser-side event that the code block surfaces to the user directly; it
-    is not reachable through the server-side ``AppTest`` harness, so there is no
-    server-side failure path to assert here. This test therefore covers the
-    success confirmation (5.6) and documents that the copy affordance (the
-    ``st.code`` copy icon asserted in ``test_revise_and_copy_controls_present...``)
-    is the mechanism whose client-side failure 5.7 refers to. No failure is
-    fabricated that the app cannot actually produce.
+    Streamlit's code block performs clipboard work in the browser, outside the
+    server-side AppTest harness. The app therefore opens that real control and
+    explains the boundary instead of claiming that a write completed.
     """
     client = MockLlmClient.with_responses()
 
@@ -316,14 +306,17 @@ def test_copy_button_confirms_on_success() -> None:
     at.session_state["session"] = _session_with_prompt()
     with patch(CLIENT_SYMBOL, return_value=client):
         at.run()
-        # Click the explicit Copy control, then rerun so the confirmation renders.
         copy_button = _button_by_key(at, "copy_button")
         assert copy_button is not None
         copy_button.click().run()
 
     assert not at.exception
-    assert len(at.success) >= 1
-    assert any("copied" in msg.value.lower() for msg in at.success)
+    assert not at.success
+    assert any(
+        "cannot verify clipboard success" in msg.value.lower()
+        for msg in at.info
+    )
+    assert any(expander.label == "Raw prompt and browser copy" for expander in at.expander)
 
 
 # --- professional frontend: local prompt editing ---------------------------

@@ -62,9 +62,9 @@ WINDOWS: dict[str, Optional[int]] = {
 
 # Chart colors, kept in step with the app palette.
 _TEAL = "#087f75"
-_CORAL = "#c2413b"  # semantic failure red, not a decorative accent
+_FAILURE_RED = "#c2413b"  # semantic failure red, not a decorative accent
 _INDIGO = "#145da0"
-_VIOLET = "#0e9fba"
+_CYAN = "#0e9fba"
 
 # (pandas frequency, bucket size in seconds), smallest first.
 _BUCKETS = [
@@ -93,54 +93,67 @@ _STATUS_STYLE: dict[str, tuple[str, str]] = {
 
 _CSS = """
 <style>
-.obs-title { font-size: 1.35rem; font-weight: 800; letter-spacing: -0.015em;
+.obs-title { font-size: 1.35rem; font-weight: 800; letter-spacing: -0.02em;
     color: var(--cpb-ink); margin: 0 0 0.15rem 0; }
 .obs-sub { color: var(--cpb-muted); font-size: 0.92rem; margin: 0 0 1.1rem 0; }
-.obs-section { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.08em;
-    text-transform: uppercase; color: var(--cpb-faint); margin: 1.6rem 0 0.6rem 0; }
+.obs-section { font-size: 0.73rem; font-weight: 800; letter-spacing: 0.095em;
+    text-transform: uppercase; color: #315b79; margin: 1.75rem 0 0.65rem 0;
+    padding-bottom: .45rem; border-bottom: 1px solid var(--cpb-border); }
 
-.obs-overall { border-radius: 12px; padding: 0.7rem 1rem; font-weight: 600;
-    font-size: 0.95rem; border: 1px solid var(--cpb-border); margin-bottom: 0.9rem; }
-.obs-overall-met { background: #e7f8f7; color: #0b5f5e; border-color: #b7e8e6; }
-.obs-overall-at_risk { background: #fff3e6; color: #9a4a06; border-color: #fcd9b0; }
-.obs-overall-breached { background: #ffe8f1; color: #a3134d; border-color: #fbb9d3; }
-.obs-overall-no_data { background: var(--cpb-subtle); color: var(--cpb-muted); }
+.obs-overall { border-radius: var(--cpb-radius-md, 12px); padding: 0.8rem 1rem; font-weight: 700;
+    font-size: 0.9rem; border: 1px solid var(--cpb-border); margin-bottom: 1rem; }
+.obs-overall-met { background: var(--cpb-success-soft, #e7f7f1); color: #075e50; border-color: #9ed8c8; }
+.obs-overall-at_risk { background: var(--cpb-warning-soft, #fff5db); color: #7b4a00; border-color: #e8c777; }
+.obs-overall-breached { background: var(--cpb-danger-soft, #feebee); color: #992b37; border-color: #efadb5; }
+.obs-overall-no_data { background: var(--cpb-surface-muted, #eef5fa); color: var(--cpb-muted); }
 
-.obs-slo { background: var(--cpb-surface); border: 1px solid var(--cpb-border);
-    border-radius: 14px; padding: 0.9rem 1rem; margin-bottom: 0.7rem;
-    box-shadow: var(--cpb-shadow-sm); border-top: 4px solid var(--cpb-border); }
-.obs-slo-met { border-top-color: #0ea5a4; }
-.obs-slo-risk { border-top-color: #f97316; }
-.obs-slo-breached { border-top-color: #e11d48; }
-.obs-slo-top { display: flex; justify-content: space-between; align-items: center; }
-.obs-slo-id { font-size: 0.72rem; font-weight: 700; color: var(--cpb-faint);
-    letter-spacing: 0.06em; }
-.obs-pill { font-size: 0.72rem; font-weight: 700; padding: 0.15rem 0.55rem;
-    border-radius: 999px; }
-.obs-pill-met { background: #e7f8f7; color: #0b5f5e; }
-.obs-pill-risk { background: #fff3e6; color: #9a4a06; }
-.obs-pill-breached { background: #ffe8f1; color: #a3134d; }
-.obs-pill-nodata { background: var(--cpb-subtle); color: var(--cpb-muted); }
-.obs-slo-name { font-weight: 700; color: var(--cpb-ink); margin: 0.35rem 0 0.1rem 0; }
-.obs-slo-sli { font-size: 1.55rem; font-weight: 800; color: var(--cpb-ink);
-    line-height: 1.2; }
-.obs-slo-target { display: block; font-size: 0.78rem; font-weight: 500;
-    color: var(--cpb-muted); }
-.obs-bar { height: 7px; background: var(--cpb-subtle); border-radius: 999px;
-    overflow: hidden; margin: 0.6rem 0 0.35rem 0; }
+.obs-slo { background: var(--cpb-surface-elevated, #fff); border: 1px solid var(--cpb-border);
+    border-radius: var(--cpb-radius-md, 12px); padding: 1rem; margin-bottom: 0.75rem;
+    box-shadow: var(--cpb-shadow-sm); border-top: 3px solid var(--cpb-border); min-height: 14rem; }
+.obs-slo-met { border-top-color: var(--cpb-success, #087f68); }
+.obs-slo-risk { border-top-color: var(--cpb-warning, #9a6200); }
+.obs-slo-breached { border-top-color: var(--cpb-danger, #c23b4a); }
+.obs-slo-top { display: flex; justify-content: space-between; align-items: center; gap: .75rem; }
+.obs-slo-id { font-size: 0.7rem; font-weight: 800; color: var(--cpb-faint); letter-spacing: 0.07em; }
+.obs-pill { font-size: 0.7rem; font-weight: 800; padding: 0.2rem 0.55rem; border-radius: 999px; white-space: nowrap; }
+.obs-pill-met { background: var(--cpb-success-soft, #e7f7f1); color: #075e50; }
+.obs-pill-risk { background: var(--cpb-warning-soft, #fff5db); color: #7b4a00; }
+.obs-pill-breached { background: var(--cpb-danger-soft, #feebee); color: #992b37; }
+.obs-pill-nodata { background: var(--cpb-surface-muted, #eef5fa); color: var(--cpb-muted); }
+.obs-slo-name { font-weight: 750; color: var(--cpb-ink); margin: 0.5rem 0 0.15rem; }
+.obs-slo-sli { font-size: 1.65rem; font-weight: 800; color: #0a3558; line-height: 1.15; }
+.obs-slo-target { display: block; font-size: 0.76rem; font-weight: 600; color: var(--cpb-muted); margin-top: .15rem; }
+.obs-bar { height: 7px; background: var(--cpb-surface-muted, #eef5fa); border-radius: 999px;
+    overflow: hidden; margin: 0.75rem 0 0.4rem; }
 .obs-bar-fill { height: 100%; border-radius: 999px; }
-.obs-bar-met { background: #0ea5a4; }
-.obs-bar-risk { background: #f97316; }
-.obs-bar-breached { background: #e11d48; }
-.obs-slo-meta { font-size: 0.78rem; color: var(--cpb-muted); }
-.obs-slo-desc { font-size: 0.78rem; color: var(--cpb-muted); margin-top: 0.35rem; }
+.obs-bar-met { background: var(--cpb-success, #087f68); }
+.obs-bar-risk { background: var(--cpb-warning, #9a6200); }
+.obs-bar-breached { background: var(--cpb-danger, #c23b4a); }
+.obs-slo-meta { font-size: 0.76rem; font-weight: 650; color: #315b79; }
+.obs-slo-desc { font-size: 0.77rem; color: var(--cpb-muted); margin-top: 0.45rem; line-height: 1.45; }
 
-.obs-empty { border: 1px dashed var(--cpb-border); border-radius: 14px;
-    background: var(--cpb-subtle); padding: 1.4rem 1.5rem; color: var(--cpb-muted); }
+.obs-empty { border: 1px dashed #91b6cd; border-radius: var(--cpb-radius-md, 12px);
+    background: var(--cpb-surface-muted, #eef5fa); padding: 1.2rem 1.35rem; color: var(--cpb-muted); line-height: 1.55; }
 .obs-empty b { color: var(--cpb-ink); }
-.obs-synth { display: inline-block; font-size: 0.78rem; font-weight: 600;
-    color: #9a4a06; background: #fff3e6; border: 1px solid #fcd9b0;
-    border-radius: 10px; padding: 0.35rem 0.7rem; margin-bottom: 0.8rem; }
+.obs-synth { display: inline-block; font-size: 0.76rem; font-weight: 700;
+    color: #7b4a00; background: var(--cpb-warning-soft, #fff5db); border: 1px solid #e8c777;
+    border-radius: 999px; padding: 0.3rem 0.7rem; margin-bottom: 0.8rem; }
+[data-testid="stMetric"] { min-height: 7.4rem; display: flex; flex-direction: column; justify-content: center; }
+[data-testid="stMetricValue"] { letter-spacing: -.025em; }
+[data-testid="stTabs"] [role="tablist"] { gap: .25rem; border-bottom: 1px solid var(--cpb-border); }
+[data-testid="stTabs"] [role="tab"] { min-height: 2.75rem; padding-inline: .8rem; border-radius: 8px 8px 0 0; }
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] { background: var(--cpb-accent-soft); color: #084c73; }
+[data-testid="stDataFrame"] { border: 1px solid var(--cpb-border); border-radius: 10px; overflow: auto; max-width: 100%; }
+.st-key-obs_clear button { color: var(--cpb-danger, #b42332) !important; border-color: #dea7ad !important; }
+.st-key-obs_clear button p { color: var(--cpb-danger, #b42332) !important; }
+.st-key-obs_clear button:hover { background: var(--cpb-danger-soft, #feebee) !important; border-color: var(--cpb-danger, #b42332) !important; }
+@media (max-width: 700px) {
+    .obs-section { margin-top: 1.35rem; }
+    .obs-slo { min-height: 0; }
+    [data-testid="stMetric"] { min-height: 6.5rem; }
+    [data-testid="stTabs"] [role="tablist"] { overflow-x: auto; flex-wrap: nowrap; }
+    [data-testid="stTabs"] [role="tab"] { flex: 0 0 auto; }
+}
 </style>
 """
 
@@ -433,7 +446,7 @@ def _render_charts(frame: pd.DataFrame, span_seconds: float) -> None:
             st.caption(f"Calls per bucket ({freq}). Times are UTC.")
             st.bar_chart(
                 traffic,
-                color=[_TEAL, _CORAL],
+                color=[_TEAL, _FAILURE_RED],
                 x_label="Time (UTC)",
                 y_label="Calls",
                 height=300,
@@ -447,7 +460,7 @@ def _render_charts(frame: pd.DataFrame, span_seconds: float) -> None:
             st.caption(f"Tokens per bucket ({freq}). Times are UTC.")
             st.bar_chart(
                 tokens,
-                color=[_INDIGO, _VIOLET],
+                color=[_INDIGO, _CYAN],
                 x_label="Time (UTC)",
                 y_label="Tokens",
                 height=300,
